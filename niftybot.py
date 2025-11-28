@@ -432,6 +432,29 @@ def get_order_execution_price(order_id):
         return None
 
 ##############################################
+# STATUS REPORTING
+##############################################
+
+def print_status_summary(position_manager, day_type, account_size):
+    """Print current bot status summary"""
+    logger.info("=" * 60)
+    logger.info("📊 BOT STATUS SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"Market Mode: {day_type if day_type else 'DETECTING...'}")
+    logger.info(f"Trades Today: {position_manager.trade_count}/{Config.MAX_TRADES_PER_DAY}")
+    logger.info(f"Open Positions: {len(position_manager.positions)}")
+    logger.info(f"Daily P&L: ₹{position_manager.daily_pnl:.2f}")
+
+    if position_manager.positions:
+        logger.info("-" * 60)
+        for symbol, pos in position_manager.positions.items():
+            logger.info(f"  Position: {symbol}")
+            logger.info(f"    Entry: ₹{pos['entry']:.2f} | SL: ₹{pos['stop_loss']:.2f} | Target: ₹{pos['target']:.2f}")
+            logger.info(f"    Qty: {pos['qty']} | Time: {pos['entry_time'].strftime('%H:%M:%S')}")
+
+    logger.info("=" * 60)
+
+##############################################
 # MAIN BOT LOOP
 ##############################################
 
@@ -440,10 +463,19 @@ def run_bot():
     position_manager = PositionManager()
     day_type = None
     last_day_type_check = None
+    last_status_print = None
     account_size = 100000  # Default ₹1 lakh, should fetch from API
 
     logger.info("=" * 60)
-    logger.info("NiftyBot started - Waiting for market data...")
+    logger.info("🚀 NIFTYBOT STARTED")
+    logger.info("=" * 60)
+    logger.info(f"Configuration:")
+    logger.info(f"  Max Trades/Day: {Config.MAX_TRADES_PER_DAY}")
+    logger.info(f"  Lot Size: {Config.LOT_SIZE}")
+    logger.info(f"  Risk per Trade: {Config.RISK_PER_TRADE_PCT}%")
+    logger.info(f"  Max Daily Loss: {Config.MAX_DAILY_LOSS_PCT}%")
+    logger.info(f"  Stop-Loss: {Config.ATR_MULTIPLIER_SL}x ATR")
+    logger.info(f"  Target: {Config.ATR_MULTIPLIER_TARGET}x ATR")
     logger.info("=" * 60)
 
     try:
@@ -511,6 +543,11 @@ def run_bot():
                 logger.info("Waiting for sufficient data to detect day type...")
                 time.sleep(Config.POLL_INTERVAL_SECONDS)
                 continue
+
+            # Print status summary every 5 minutes
+            if last_status_print is None or (now - last_status_print).seconds >= 300:
+                print_status_summary(position_manager, day_type, account_size)
+                last_status_print = now
 
             # Check daily loss limit
             if check_daily_loss_limit(position_manager, account_size):

@@ -126,12 +126,44 @@ class Config:
 ### Run the Bot
 
 ```bash
+# Terminal 1: Start the bot
 python niftybot.py
+
+# Terminal 2 (optional): Live monitoring dashboard
+python monitor.py
+
+# Terminal 3 (optional): Control panel
+python control.py
 ```
 
-### Monitor Logs
+### 🎮 Monitoring & Control
+
+**NEW**: We now have 3 ways to monitor and control the bot:
+
+1. **Main Bot Console** - Shows real-time activity with status summary every 5 minutes
+2. **Live Monitor Dashboard** (`monitor.py`) - Clean dashboard updating every 5 seconds
+3. **Control Panel** (`control.py`) - Interactive menu to view positions, orders, and emergency close
+
+**📖 See [MONITORING_GUIDE.md](MONITORING_GUIDE.md) for complete details on:**
+- Who controls trading (spoiler: THIS BOT, not Kite)
+- How to monitor trades in real-time
+- How to manually control positions
+- Emergency procedures
+- Daily checklist
+
+### Quick Control Reference
 
 ```bash
+# Stop bot (auto-squares off positions)
+Ctrl+C
+
+# View positions/orders interactively
+python control.py
+
+# Watch live dashboard
+python monitor.py
+
+# View logs
 tail -f niftybot.log
 ```
 
