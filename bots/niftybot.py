@@ -16,9 +16,8 @@ from common.config import (
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
-    compute_vwap, atr, rsi, ema, psar,
-    detect_day_type, get_atm_strike,
-    check_exit_conditions
+    compute_vwap, atr, rsi, ema, psar, adx,
+    detect_day_type, get_atm_strike
 )
 
 ##############################################
@@ -111,6 +110,7 @@ class NiftyBot:
                 df = compute_vwap(df)
                 df = atr(df)
                 df = psar(df)
+                df = adx(df)
                 return df
 
         except Exception as e:
@@ -245,18 +245,70 @@ class NiftyBot:
             'product': PRODUCT_MIS,
             'stop_loss': stop_loss,
             'reason': f"{self.day_type} day - {signal_type}",
-            'entry_price': current_price
+            'entry_price': current_price,  # This will be replaced with actual fill price
+            'entry_spot': current_price,   # NIFTY spot price for exit calculations
         }
 
     def _check_exits(self, df):
-        """Check exit conditions for active positions."""
+        """
+        Check exit conditions for active positions.
+
+        Uses NIFTY spot-based exit logic (not option premium):
+        - PSAR flip on NIFTY spot
+        - Price closes below 20 EMA on NIFTY spot
+        - ADX declining
+        - Stop loss based on NIFTY spot movement from entry
+        """
         exit_signals = []
+        current_spot = df["close"].iloc[-1]
+        current_ema = ema(df["close"], 20).iloc[-1]
 
         for symbol, position in list(self.active_positions.items()):
-            exit_check = check_exit_conditions(df, position['entry_price'])
+            reasons = []
+            conditions_met = 0
 
-            if exit_check['should_exit']:
-                self.logger.info(f"Exit signal: {symbol} | Reasons: {', '.join(exit_check['reasons'])}")
+            # Determine if CE or PE from symbol
+            is_call = symbol.endswith("CE")
+            entry_spot = position['entry_spot']
+            stop_loss = position['stop_loss']
+
+            # Condition 1: PSAR flip (bearish for CE, bullish for PE)
+            psar_bearish = df['PSAR_trend'].iloc[-1] == -1
+            if is_call and psar_bearish:
+                conditions_met += 1
+                reasons.append("PSAR flip bearish")
+            elif not is_call and not psar_bearish:
+                conditions_met += 1
+                reasons.append("PSAR flip bullish")
+
+            # Condition 2: Price vs EMA
+            if is_call and current_spot < current_ema:
+                conditions_met += 1
+                reasons.append("Spot below 20 EMA")
+            elif not is_call and current_spot > current_ema:
+                conditions_met += 1
+                reasons.append("Spot above 20 EMA")
+
+            # Condition 3: ADX declining
+            if len(df) > 1 and 'ADX' in df.columns:
+                if df['ADX'].iloc[-1] < df['ADX'].iloc[-2]:
+                    conditions_met += 1
+                    reasons.append("ADX declining")
+
+            # Stop loss check (based on spot movement)
+            stop_hit = False
+            if is_call and current_spot < stop_loss:
+                stop_hit = True
+                reasons.append(f"Stop loss hit (spot: {current_spot:.2f} < SL: {stop_loss:.2f})")
+            elif not is_call and current_spot > stop_loss:
+                stop_hit = True
+                reasons.append(f"Stop loss hit (spot: {current_spot:.2f} > SL: {stop_loss:.2f})")
+
+            # Exit if 2 of 3 conditions met OR stop loss hit
+            should_exit = conditions_met >= 2 or stop_hit
+
+            if should_exit:
+                self.logger.info(f"Exit signal: {symbol} | Reasons: {', '.join(reasons)}")
 
                 exit_signals.append({
                     'source': self.name,
@@ -266,12 +318,12 @@ class NiftyBot:
                     'quantity': position['quantity'],
                     'order_type': ORDER_TYPE_MARKET,
                     'product': PRODUCT_MIS,
-                    'reason': ', '.join(exit_check['reasons'])
+                    'reason': ', '.join(reasons)
                 })
 
         return exit_signals
 
-    def on_order_complete(self, order_id, symbol, action, quantity, price):
+    def on_order_complete(self, order_id, symbol, action, quantity, price, entry_spot=None, stop_loss=None):
         """
         Callback when order is completed.
 
@@ -280,16 +332,20 @@ class NiftyBot:
             symbol: Trading symbol
             action: BUY or SELL
             quantity: Filled quantity
-            price: Filled price
+            price: Filled price (option premium)
+            entry_spot: NIFTY spot price at entry (for exit calculations)
+            stop_loss: Stop loss level (NIFTY spot based)
         """
         if action == TRANSACTION_BUY:
             self.trade_count += 1
             self.active_positions[symbol] = {
                 'order_id': order_id,
                 'entry_price': price,
+                'entry_spot': entry_spot or price,  # Fallback to price if not provided
+                'stop_loss': stop_loss or 0,
                 'quantity': quantity
             }
-            self.logger.info(f"Position opened: {symbol} | Trade #{self.trade_count}")
+            self.logger.info(f"Position opened: {symbol} @ Rs. {price} | Spot: {entry_spot} | Trade #{self.trade_count}")
 
         elif action == TRANSACTION_SELL:
             if symbol in self.active_positions:

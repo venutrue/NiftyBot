@@ -219,14 +219,22 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
 
                         if order_id:
                             total_trades += 1
+
+                            # Get actual fill price from order history
+                            fill_price = signal.get('entry_price', 0)
+                            order_status = executor.get_order_history(order_id)
+                            if order_status and order_status.get('average_price'):
+                                fill_price = order_status['average_price']
+
                             # Notify bot of order completion
-                            # In production, you'd get actual fill price from order status
                             bot.on_order_complete(
                                 order_id=order_id,
                                 symbol=signal['symbol'],
                                 action=signal['action'],
                                 quantity=signal['quantity'],
-                                price=signal.get('entry_price', 0)
+                                price=fill_price,
+                                entry_spot=signal.get('entry_spot'),
+                                stop_loss=signal.get('stop_loss')
                             )
 
         except Exception as e:

@@ -108,10 +108,15 @@ class StockBot:
             if ltp is None:
                 return None
 
-            # For now, we'll work with daily data
-            # In production, you'd fetch minute data for intraday volume
-            data = self.executor.broker.kite.historical_data(
-                instrument_token=self._get_instrument_token(symbol),
+            # Get instrument token via executor
+            instrument_token = self.executor.get_instrument_token(symbol, EXCHANGE_NSE)
+            if instrument_token is None:
+                self.logger.warning(f"Could not find instrument token for {symbol}")
+                return None
+
+            # Fetch daily data via executor
+            data = self.executor.get_historical_data(
+                instrument_token=instrument_token,
                 from_date=from_date,
                 to_date=now,
                 interval="day"
@@ -126,21 +131,6 @@ class StockBot:
 
         return None
 
-    def _get_instrument_token(self, symbol):
-        """
-        Get instrument token for a symbol.
-        Note: In production, maintain an instrument master file.
-        """
-        # This is a placeholder - in production, lookup from instruments file
-        # You would load the instruments file once at startup
-        try:
-            instruments = self.executor.broker.kite.instruments(EXCHANGE_NSE)
-            for inst in instruments:
-                if inst['tradingsymbol'] == symbol:
-                    return inst['instrument_token']
-        except:
-            pass
-        return None
 
     def check_volume_spike(self, df):
         """
@@ -397,7 +387,7 @@ class StockBot:
 
         return exit_signals
 
-    def on_order_complete(self, order_id, symbol, action, quantity, price):
+    def on_order_complete(self, order_id, symbol, action, quantity, price, **kwargs):
         """
         Callback when order is completed.
 
@@ -407,6 +397,7 @@ class StockBot:
             action: BUY or SELL
             quantity: Filled quantity
             price: Filled price
+            **kwargs: Additional args (entry_spot, stop_loss) - used by NiftyBot
         """
         if action == TRANSACTION_BUY:
             self.trade_count += 1

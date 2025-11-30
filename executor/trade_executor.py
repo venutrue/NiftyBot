@@ -255,6 +255,48 @@ class KiteExecutor(BrokerInterface):
             log_error("EXECUTOR", f"Failed to get historical data: {str(e)}")
             return None
 
+    def get_instruments(self, exchange=EXCHANGE_NSE):
+        """Get list of instruments for an exchange."""
+        if not self.connected:
+            return None
+
+        try:
+            instruments = self.kite.instruments(exchange)
+            return instruments
+        except Exception as e:
+            log_error("EXECUTOR", f"Failed to get instruments: {str(e)}")
+            return None
+
+    def get_instrument_token(self, symbol, exchange=EXCHANGE_NSE):
+        """Get instrument token for a symbol."""
+        if not self.connected:
+            return None
+
+        try:
+            instruments = self.kite.instruments(exchange)
+            for inst in instruments:
+                if inst['tradingsymbol'] == symbol:
+                    return inst['instrument_token']
+            return None
+        except Exception as e:
+            log_error("EXECUTOR", f"Failed to get instrument token for {symbol}: {str(e)}")
+            return None
+
+    def get_order_history(self, order_id):
+        """Get order history/status to retrieve fill price."""
+        if not self.connected:
+            return None
+
+        try:
+            order_history = self.kite.order_history(order_id)
+            if order_history:
+                # Return the latest status
+                return order_history[-1]
+            return None
+        except Exception as e:
+            log_error("EXECUTOR", f"Failed to get order history: {str(e)}")
+            return None
+
 ##############################################
 # TRADE EXECUTOR (Main Class)
 ##############################################
@@ -366,6 +408,18 @@ class TradeExecutor:
     def get_historical_data(self, instrument_token, from_date, to_date, interval="minute"):
         """Get historical data."""
         return self.broker.get_historical_data(instrument_token, from_date, to_date, interval)
+
+    def get_instruments(self, exchange=EXCHANGE_NSE):
+        """Get list of instruments for an exchange."""
+        return self.broker.get_instruments(exchange)
+
+    def get_instrument_token(self, symbol, exchange=EXCHANGE_NSE):
+        """Get instrument token for a symbol."""
+        return self.broker.get_instrument_token(symbol, exchange)
+
+    def get_order_history(self, order_id):
+        """Get order history/status to retrieve fill price."""
+        return self.broker.get_order_history(order_id)
 
     def update_daily_pnl(self, pnl):
         """Update daily P&L tracking."""
