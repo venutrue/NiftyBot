@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs (keep structure, ignore contents)
+logs/*.log
+logs/audit/*.log
+!logs/.gitkeep
+!logs/audit/.gitkeep
+
+# Credentials (never commit)
+.env
+*.pem
+*credentials*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test/temp files
+*.tmp
+*.bak
