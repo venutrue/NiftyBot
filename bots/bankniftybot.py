@@ -162,25 +162,43 @@ class BankNiftyBot:
         st_bullish = is_supertrend_bullish(df)
         st_bearish = is_supertrend_bearish(df)
 
+        # Calculate ATM strike for logging (BANKNIFTY uses 100 step)
+        atm_strike = get_atm_strike(current_price, step=BANKNIFTY_STRIKE_STEP)
+
         # VWAP buffer
         vwap_upper = current_vwap * (1 + VWAP_BUFFER_PERCENT / 100)
         vwap_lower = current_vwap * (1 - VWAP_BUFFER_PERCENT / 100)
 
-        # Log current market state
-        self.logger.debug(
-            f"Price: {current_price:.2f} | VWAP: {current_vwap:.2f} | "
-            f"ADX: {current_adx:.2f} | ST: {'Bullish' if st_bullish else 'Bearish'}"
+        # Determine status reason
+        status = "Scanning..."
+        vwap_status = "Above" if current_price > current_vwap else "Below"
+        st_status = "Bullish" if st_bullish else "Bearish"
+
+        # Check conditions and set status
+        if current_adx < ADX_ENTRY_THRESHOLD:
+            status = f"No trend (ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD})"
+        elif current_price > vwap_upper and not st_bullish:
+            status = "Price > VWAP but ST Bearish - Mismatch"
+        elif current_price < vwap_lower and not st_bearish:
+            status = "Price < VWAP but ST Bullish - Mismatch"
+        elif vwap_lower <= current_price <= vwap_upper:
+            status = "Price near VWAP - No clear direction"
+
+        # Log current market state (INFO level)
+        self.logger.info(
+            f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+            f"VWAP: {current_vwap:.2f} ({vwap_status}) | "
+            f"ADX: {current_adx:.1f} | ST: {st_status} | {status}"
         )
 
         # Check ADX strength first
         if current_adx < ADX_ENTRY_THRESHOLD:
-            self.logger.debug(f"ADX {current_adx:.2f} < {ADX_ENTRY_THRESHOLD} - No trend")
             return None
 
         # BUY CE conditions: Price > VWAP + Supertrend Bullish + ADX > threshold
         if current_price > vwap_upper and st_bullish:
             self.logger.info(
-                f"CE Signal: Price {current_price:.2f} > VWAP {current_vwap:.2f} | "
+                f">>> CE SIGNAL: Price {current_price:.2f} > VWAP {current_vwap:.2f} | "
                 f"Supertrend Bullish | ADX {current_adx:.2f}"
             )
             return 'BUY_CE'
@@ -188,7 +206,7 @@ class BankNiftyBot:
         # BUY PE conditions: Price < VWAP + Supertrend Bearish + ADX > threshold
         if current_price < vwap_lower and st_bearish:
             self.logger.info(
-                f"PE Signal: Price {current_price:.2f} < VWAP {current_vwap:.2f} | "
+                f">>> PE SIGNAL: Price {current_price:.2f} < VWAP {current_vwap:.2f} | "
                 f"Supertrend Bearish | ADX {current_adx:.2f}"
             )
             return 'BUY_PE'
