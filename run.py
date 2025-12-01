@@ -12,7 +12,8 @@ import sys
 
 from common.config import (
     MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,
-    MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE
+    MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE,
+    validate_credentials
 )
 from common.logger import (
     log_system, log_user_action, log_daily_summary,
@@ -262,6 +263,10 @@ def main():
     global running
 
     args = parse_arguments()
+
+    # Validate credentials first
+    if not validate_credentials():
+        sys.exit(1)
 
     # Initialize executor
     executor = TradeExecutor()

@@ -4,15 +4,62 @@
 ##############################################
 
 import os
+import sys
+
+##############################################
+# LOAD .env FILE (if exists)
+##############################################
+
+def _load_env():
+    """Load environment variables from .env file."""
+    # Look for .env in project root
+    env_paths = [".env", "../.env"]
+    for env_path in env_paths:
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        os.environ[key] = value
+            return True
+    return False
+
+# Auto-load .env on import
+_load_env()
 
 ##############################################
 # KITE CONNECT CREDENTIALS
 ##############################################
 
-# Load from environment variables or use defaults
-API_KEY = os.environ.get("KITE_API_KEY", "your_api_key")
-ACCESS_TOKEN = os.environ.get("KITE_ACCESS_TOKEN", "your_access_token")
-API_SECRET = os.environ.get("KITE_API_SECRET", "your_api_secret")
+# Load from environment variables
+API_KEY = os.environ.get("KITE_API_KEY", "")
+ACCESS_TOKEN = os.environ.get("KITE_ACCESS_TOKEN", "")
+API_SECRET = os.environ.get("KITE_API_SECRET", "")
+
+# Validate credentials
+def validate_credentials():
+    """Check if credentials are properly configured."""
+    missing = []
+    if not API_KEY or API_KEY == "your_api_key":
+        missing.append("KITE_API_KEY")
+    if not ACCESS_TOKEN or ACCESS_TOKEN == "your_access_token":
+        missing.append("KITE_ACCESS_TOKEN")
+
+    if missing:
+        print("\n" + "=" * 50)
+        print("ERROR: Missing Kite Connect Credentials")
+        print("=" * 50)
+        print(f"\nMissing: {', '.join(missing)}")
+        print("\nTo fix this, run: python generate_token.py")
+        print("This will generate a .env file with your credentials.")
+        print("=" * 50 + "\n")
+        return False
+    return True
 
 ##############################################
 # BROKER SETTINGS
