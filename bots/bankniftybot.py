@@ -42,9 +42,9 @@ class BankNiftyBot:
     BANKNIFTY Options Trading Bot - 2 Lakhs Capital Strategy.
 
     Entry Strategy (ALL must be true):
-    - Price > VWAP (for CE) or Price < VWAP (for PE)
-    - Supertrend bullish (for CE) or bearish (for PE)
-    - ADX > 23 (confirming trend strength)
+    - Option Premium > Option VWAP (smart money accumulation)
+    - Supertrend bullish (for CE) or bearish (for PE) on spot
+    - ADX > 23 (confirming trend strength) on spot
 
     Exit Strategy:
     - Phase 1: Fixed SL at 20% loss
@@ -68,6 +68,10 @@ class BankNiftyBot:
         # Position tracking
         self.max_premium_seen = {}  # Track highest premium for trailing
 
+        # Instrument cache (avoid repeated API calls)
+        self._nfo_instruments = None
+        self._instruments_loaded = False
+
     def reset_daily_state(self):
         """Reset state at start of new trading day."""
         self.trade_count = 0
@@ -75,7 +79,72 @@ class BankNiftyBot:
         self.daily_pnl = 0
         self.active_positions = {}
         self.max_premium_seen = {}
+        # Refresh instruments daily (expiry changes)
+        self._nfo_instruments = None
+        self._instruments_loaded = False
         self.logger.info("Daily state reset")
+
+    def _load_nfo_instruments(self):
+        """Load NFO instruments list (cached for the day)."""
+        if self._instruments_loaded:
+            return self._nfo_instruments
+
+        try:
+            self._nfo_instruments = self.executor.get_instruments(EXCHANGE_NFO)
+            self._instruments_loaded = True
+            self.logger.info(f"Loaded {len(self._nfo_instruments)} NFO instruments")
+            return self._nfo_instruments
+        except Exception as e:
+            self.logger.error(f"Failed to load NFO instruments: {str(e)}")
+            return None
+
+    def _get_option_token(self, symbol):
+        """Get instrument token for an option symbol."""
+        instruments = self._load_nfo_instruments()
+        if instruments is None:
+            return None
+
+        for inst in instruments:
+            if inst['tradingsymbol'] == symbol:
+                return inst['instrument_token']
+        return None
+
+    def fetch_option_data(self, symbol):
+        """
+        Fetch option historical data and compute VWAP.
+
+        Args:
+            symbol: Option trading symbol (e.g., BANKNIFTY24DEC59700CE)
+
+        Returns:
+            DataFrame with option OHLCV and VWAP, or None if failed
+        """
+        token = self._get_option_token(symbol)
+        if token is None:
+            self.logger.debug(f"Could not find token for {symbol}")
+            return None
+
+        now = datetime.datetime.now()
+        # Get data from market open for VWAP calculation
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
+
+        try:
+            data = self.executor.get_historical_data(
+                instrument_token=token,
+                from_date=market_open,
+                to_date=now,
+                interval="minute"
+            )
+
+            if data and len(data) > 0:
+                df = pd.DataFrame(data)
+                df = compute_vwap(df)
+                return df
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch option data for {symbol}: {str(e)}")
+
+        return None
 
     def get_weekly_expiry(self):
         """Get current week's Wednesday expiry for BANKNIFTY."""
@@ -150,6 +219,10 @@ class BankNiftyBot:
         """
         Check if all entry conditions are met.
 
+        Entry Logic:
+        - Supertrend and ADX checked on SPOT data
+        - VWAP checked on OPTION data (specific strike)
+
         Returns:
             'BUY_CE', 'BUY_PE', or None
         """
@@ -157,59 +230,82 @@ class BankNiftyBot:
             return None
 
         current_price = df['close'].iloc[-1]
-        current_vwap = df['vwap'].iloc[-1]
         current_adx = df['ADX'].iloc[-1]
         st_bullish = is_supertrend_bullish(df)
         st_bearish = is_supertrend_bearish(df)
 
-        # Calculate ATM strike for logging (BANKNIFTY uses 100 step)
+        # Calculate ATM strike (BANKNIFTY uses 100 step)
         atm_strike = get_atm_strike(current_price, step=BANKNIFTY_STRIKE_STEP)
-
-        # VWAP buffer
-        vwap_upper = current_vwap * (1 + VWAP_BUFFER_PERCENT / 100)
-        vwap_lower = current_vwap * (1 - VWAP_BUFFER_PERCENT / 100)
-
-        # Determine status reason
-        status = "Scanning..."
-        vwap_status = "Above" if current_price > current_vwap else "Below"
         st_status = "Bullish" if st_bullish else "Bearish"
 
-        # Check conditions and set status
+        # Check ADX strength first (no point fetching option data if no trend)
         if current_adx < ADX_ENTRY_THRESHOLD:
-            status = f"No trend (ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD})"
-        elif current_price > vwap_upper and not st_bullish:
-            status = "Price > VWAP but ST Bearish - Mismatch"
-        elif current_price < vwap_lower and not st_bearish:
-            status = "Price < VWAP but ST Bullish - Mismatch"
-        elif vwap_lower <= current_price <= vwap_upper:
-            status = "Price near VWAP - No clear direction"
-
-        # Log current market state (INFO level)
-        self.logger.info(
-            f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-            f"VWAP: {current_vwap:.2f} ({vwap_status}) | "
-            f"ADX: {current_adx:.1f} | ST: {st_status} | {status}"
-        )
-
-        # Check ADX strength first
-        if current_adx < ADX_ENTRY_THRESHOLD:
+            self.logger.info(
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                f"No trend (ADX < {ADX_ENTRY_THRESHOLD})"
+            )
             return None
 
-        # BUY CE conditions: Price > VWAP + Supertrend Bullish + ADX > threshold
-        if current_price > vwap_upper and st_bullish:
-            self.logger.info(
-                f">>> CE SIGNAL: Price {current_price:.2f} > VWAP {current_vwap:.2f} | "
-                f"Supertrend Bullish | ADX {current_adx:.2f}"
-            )
-            return 'BUY_CE'
+        # Build option symbols
+        ce_symbol = self.get_option_symbol(atm_strike, "CE")
+        pe_symbol = self.get_option_symbol(atm_strike, "PE")
 
-        # BUY PE conditions: Price < VWAP + Supertrend Bearish + ADX > threshold
-        if current_price < vwap_lower and st_bearish:
-            self.logger.info(
-                f">>> PE SIGNAL: Price {current_price:.2f} < VWAP {current_vwap:.2f} | "
-                f"Supertrend Bearish | ADX {current_adx:.2f}"
-            )
-            return 'BUY_PE'
+        # Check CE conditions if Supertrend is Bullish
+        if st_bullish:
+            ce_data = self.fetch_option_data(ce_symbol)
+            if ce_data is not None and len(ce_data) > 5:
+                ce_premium = ce_data['close'].iloc[-1]
+                ce_vwap = ce_data['vwap'].iloc[-1]
+                vwap_status = "Above" if ce_premium > ce_vwap else "Below"
+
+                self.logger.info(
+                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"CE: {ce_premium:.2f} vs VWAP: {ce_vwap:.2f} ({vwap_status})"
+                )
+
+                # BUY CE: Premium > VWAP (smart money buying)
+                if ce_premium > ce_vwap:
+                    self.logger.info(
+                        f">>> CE SIGNAL: {ce_symbol} | Premium {ce_premium:.2f} > VWAP {ce_vwap:.2f} | "
+                        f"Supertrend Bullish | ADX {current_adx:.1f}"
+                    )
+                    return 'BUY_CE'
+            else:
+                self.logger.info(
+                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"CE VWAP: No data for {ce_symbol}"
+                )
+
+        # Check PE conditions if Supertrend is Bearish
+        elif st_bearish:
+            pe_data = self.fetch_option_data(pe_symbol)
+            if pe_data is not None and len(pe_data) > 5:
+                pe_premium = pe_data['close'].iloc[-1]
+                pe_vwap = pe_data['vwap'].iloc[-1]
+                vwap_status = "Above" if pe_premium > pe_vwap else "Below"
+
+                self.logger.info(
+                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"PE: {pe_premium:.2f} vs VWAP: {pe_vwap:.2f} ({vwap_status})"
+                )
+
+                # BUY PE: Premium > VWAP (smart money buying)
+                if pe_premium > pe_vwap:
+                    self.logger.info(
+                        f">>> PE SIGNAL: {pe_symbol} | Premium {pe_premium:.2f} > VWAP {pe_vwap:.2f} | "
+                        f"Supertrend Bearish | ADX {current_adx:.1f}"
+                    )
+                    return 'BUY_PE'
+            else:
+                self.logger.info(
+                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"PE VWAP: No data for {pe_symbol}"
+                )
 
         return None
 
