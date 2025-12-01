@@ -7,9 +7,19 @@ import logging
 import os
 from datetime import datetime
 from common.config import (
-    LOG_DIR, AUDIT_LOG_DIR, LOG_LEVEL,
-    LOG_FORMAT, LOG_DATE_FORMAT
+    LOG_LEVEL, LOG_FORMAT, LOG_DATE_FORMAT
 )
+
+##############################################
+# GET ABSOLUTE LOG PATHS
+##############################################
+
+# Get the project root directory (parent of 'common' folder)
+_LOGGER_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_LOGGER_DIR)
+
+LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
+AUDIT_LOG_DIR = os.path.join(_PROJECT_ROOT, "logs", "audit")
 
 ##############################################
 # ENSURE LOG DIRECTORIES EXIST
