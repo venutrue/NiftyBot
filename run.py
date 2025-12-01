@@ -21,6 +21,7 @@ from common.logger import (
 )
 from executor.trade_executor import TradeExecutor
 from bots.niftybot import NiftyBot
+from bots.bankniftybot import BankNiftyBot
 from bots.stockbot import StockBot
 
 ##############################################
@@ -50,8 +51,8 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 
 AVAILABLE_BOTS = {
     'nifty': NiftyBot,
+    'banknifty': BankNiftyBot,
     'stock': StockBot,
-    # Future: 'funda': FundaBot,
 }
 
 ##############################################

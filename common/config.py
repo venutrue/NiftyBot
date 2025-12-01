@@ -112,6 +112,11 @@ MIN_INVESTMENT_PER_TRADE = 40000      # Rs. 40K min per trade
 # NIFTY lot size (changed to 25 recently)
 NIFTY_LOT_SIZE = 25
 
+# BANKNIFTY lot size (changed to 15 recently)
+BANKNIFTY_LOT_SIZE = 15
+BANKNIFTY_STRIKE_STEP = 100           # Strike interval for BANKNIFTY
+BANKNIFTY_MAX_TRADES_PER_DAY = 2      # Max trades for BANKNIFTY bot
+
 ##############################################
 # RISK MANAGEMENT
 ##############################################
