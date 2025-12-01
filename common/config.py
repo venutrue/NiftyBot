@@ -10,23 +10,27 @@ import sys
 # LOAD .env FILE (if exists)
 ##############################################
 
+# Get the project root directory (parent of 'common' folder)
+_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_CONFIG_DIR)
+
 def _load_env():
     """Load environment variables from .env file."""
-    # Look for .env in project root
-    env_paths = [".env", "../.env"]
-    for env_path in env_paths:
-        if os.path.exists(env_path):
-            with open(env_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if "=" in line:
-                        key, value = line.split("=", 1)
-                        key = key.strip()
-                        value = value.strip().strip('"').strip("'")
-                        os.environ[key] = value
-            return True
+    # Look for .env in project root (absolute path)
+    env_path = os.path.join(_PROJECT_ROOT, ".env")
+
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    os.environ[key] = value
+        return True
     return False
 
 # Auto-load .env on import
