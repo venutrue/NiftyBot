@@ -235,6 +235,7 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
                                 quantity=signal['quantity'],
                                 price=fill_price,
                                 entry_spot=signal.get('entry_spot'),
+                                initial_sl=signal.get('initial_sl'),
                                 stop_loss=signal.get('stop_loss')
                             )
 

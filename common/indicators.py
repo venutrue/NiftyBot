@@ -260,6 +260,98 @@ def is_psar_bearish(df):
     return df['PSAR_trend'].iloc[-1] == -1
 
 ##############################################
+# SUPERTREND INDICATOR
+##############################################
+
+def supertrend(df, period=10, multiplier=2):
+    """
+    Calculate Supertrend indicator.
+
+    Args:
+        df: DataFrame with 'high', 'low', 'close' columns
+        period: ATR period (default 10)
+        multiplier: ATR multiplier (default 2)
+
+    Returns:
+        DataFrame with 'Supertrend', 'Supertrend_direction' columns added
+        Supertrend_direction: 1 = bullish (green), -1 = bearish (red)
+    """
+    df = df.copy()
+
+    # Calculate ATR
+    df['TR'] = np.maximum(
+        df['high'] - df['low'],
+        np.maximum(
+            abs(df['high'] - df['close'].shift(1)),
+            abs(df['low'] - df['close'].shift(1))
+        )
+    )
+    df['ATR_ST'] = df['TR'].rolling(window=period).mean()
+
+    # Calculate basic upper and lower bands
+    hl2 = (df['high'] + df['low']) / 2
+    df['basic_upper'] = hl2 + (multiplier * df['ATR_ST'])
+    df['basic_lower'] = hl2 - (multiplier * df['ATR_ST'])
+
+    # Initialize Supertrend columns
+    length = len(df)
+    supertrend_values = np.zeros(length)
+    direction = np.zeros(length)
+
+    final_upper = np.zeros(length)
+    final_lower = np.zeros(length)
+
+    for i in range(period, length):
+        # Final upper band
+        if df['basic_upper'].iloc[i] < final_upper[i-1] or df['close'].iloc[i-1] > final_upper[i-1]:
+            final_upper[i] = df['basic_upper'].iloc[i]
+        else:
+            final_upper[i] = final_upper[i-1]
+
+        # Final lower band
+        if df['basic_lower'].iloc[i] > final_lower[i-1] or df['close'].iloc[i-1] < final_lower[i-1]:
+            final_lower[i] = df['basic_lower'].iloc[i]
+        else:
+            final_lower[i] = final_lower[i-1]
+
+        # Supertrend calculation
+        if i == period:
+            if df['close'].iloc[i] <= final_upper[i]:
+                supertrend_values[i] = final_upper[i]
+                direction[i] = -1  # Bearish
+            else:
+                supertrend_values[i] = final_lower[i]
+                direction[i] = 1  # Bullish
+        else:
+            if supertrend_values[i-1] == final_upper[i-1]:  # Previous was bearish
+                if df['close'].iloc[i] > final_upper[i]:
+                    supertrend_values[i] = final_lower[i]
+                    direction[i] = 1  # Flip to bullish
+                else:
+                    supertrend_values[i] = final_upper[i]
+                    direction[i] = -1  # Stay bearish
+            else:  # Previous was bullish
+                if df['close'].iloc[i] < final_lower[i]:
+                    supertrend_values[i] = final_upper[i]
+                    direction[i] = -1  # Flip to bearish
+                else:
+                    supertrend_values[i] = final_lower[i]
+                    direction[i] = 1  # Stay bullish
+
+    df['Supertrend'] = supertrend_values
+    df['Supertrend_direction'] = direction
+
+    return df
+
+def is_supertrend_bullish(df):
+    """Check if Supertrend is bullish (green)."""
+    return df['Supertrend_direction'].iloc[-1] == 1
+
+def is_supertrend_bearish(df):
+    """Check if Supertrend is bearish (red)."""
+    return df['Supertrend_direction'].iloc[-1] == -1
+
+##############################################
 # BREAKOUT DETECTION
 ##############################################
 
