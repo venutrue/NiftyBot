@@ -6,6 +6,7 @@
 ##############################################
 
 import datetime
+import time
 from abc import ABC, abstractmethod
 from kiteconnect import KiteConnect
 
@@ -16,7 +17,8 @@ from common.config import (
     ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT, ORDER_TYPE_SL,
     PRODUCT_MIS, PRODUCT_CNC, PRODUCT_NRML,
     VARIETY_REGULAR,
-    MAX_LOSS_PER_DAY, MAX_CAPITAL_DEPLOYED
+    MAX_LOSS_PER_DAY, MAX_CAPITAL_DEPLOYED,
+    API_MAX_RETRIES, API_RETRY_DELAY, API_TIMEOUT
 )
 from common.logger import (
     setup_logger, log_trade, log_error,
@@ -96,6 +98,61 @@ class KiteExecutor(BrokerInterface):
             log_error("EXECUTOR", f"Failed to connect to Kite: {str(e)}")
             self.connected = False
             return False
+
+    def _retry_api_call(self, func, func_name, *args, **kwargs):
+        """
+        Retry an API call with exponential backoff on network errors.
+
+        Args:
+            func: The API function to call
+            func_name: Name of the function (for logging)
+            *args, **kwargs: Arguments to pass to the function
+
+        Returns:
+            Result of the API call, or None if all retries fail
+        """
+        last_error = None
+        delay = API_RETRY_DELAY
+
+        for attempt in range(1, API_MAX_RETRIES + 1):
+            try:
+                self.logger.debug(f"{func_name}: Attempt {attempt}/{API_MAX_RETRIES}")
+                result = func(*args, **kwargs)
+
+                # Success - log if we had retries
+                if attempt > 1:
+                    self.logger.info(f"{func_name}: Succeeded on attempt {attempt}")
+
+                return result
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+
+                # Check if it's a network error that should be retried
+                is_network_error = any(err in error_str.lower() for err in [
+                    'connection', 'reset', 'timeout', 'timed out',
+                    'network', 'refused', 'unreachable', 'aborted'
+                ])
+
+                if is_network_error and attempt < API_MAX_RETRIES:
+                    self.logger.warning(
+                        f"{func_name}: Network error on attempt {attempt}/{API_MAX_RETRIES}: {error_str}"
+                    )
+                    self.logger.info(f"{func_name}: Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    delay *= 2  # Exponential backoff
+                else:
+                    # Non-network error or last attempt
+                    if attempt == API_MAX_RETRIES:
+                        log_error("EXECUTOR",
+                            f"{func_name}: Failed after {API_MAX_RETRIES} attempts: {error_str}")
+                    else:
+                        log_error("EXECUTOR", f"{func_name}: {error_str}")
+                    return None
+
+        # All retries exhausted
+        return None
 
     def place_order(self, signal):
         """
@@ -226,46 +283,108 @@ class KiteExecutor(BrokerInterface):
             return None
 
     def get_ltp(self, symbol, exchange=EXCHANGE_NSE):
-        """Get last traded price."""
+        """
+        Get last traded price with retry logic.
+
+        Args:
+            symbol: Trading symbol
+            exchange: Exchange (NSE, NFO, etc.)
+
+        Returns:
+            Last traded price, or None if failed
+        """
         if not self.connected:
+            self.logger.debug("get_ltp: Not connected to broker")
             return None
 
-        try:
-            instrument = f"{exchange}:{symbol}"
-            ltp_data = self.kite.ltp([instrument])
-            return ltp_data[instrument]['last_price']
-        except Exception as e:
-            log_error("EXECUTOR", f"Failed to get LTP: {str(e)}")
+        instrument = f"{exchange}:{symbol}"
+        self.logger.debug(f"get_ltp: Fetching LTP for {instrument}")
+
+        # Use retry wrapper
+        ltp_data = self._retry_api_call(
+            self.kite.ltp,
+            "get_ltp",
+            [instrument]
+        )
+
+        if ltp_data and instrument in ltp_data:
+            ltp = ltp_data[instrument]['last_price']
+            self.logger.debug(f"get_ltp: {instrument} = {ltp}")
+            return ltp
+        else:
+            self.logger.warning(f"get_ltp: No data for {instrument}")
             return None
 
     def get_historical_data(self, instrument_token, from_date, to_date, interval="minute"):
-        """Get historical data for backtesting/analysis."""
+        """
+        Get historical data for backtesting/analysis with retry logic.
+
+        Args:
+            instrument_token: Instrument token
+            from_date: Start datetime
+            to_date: End datetime
+            interval: Candle interval (minute, day, etc.)
+
+        Returns:
+            List of OHLCV candles, or None if failed
+        """
         if not self.connected:
+            self.logger.debug("get_historical_data: Not connected to broker")
             return None
 
-        try:
-            data = self.kite.historical_data(
-                instrument_token=instrument_token,
-                from_date=from_date,
-                to_date=to_date,
-                interval=interval
-            )
-            return data
-        except Exception as e:
-            log_error("EXECUTOR", f"Failed to get historical data: {str(e)}")
-            return None
+        self.logger.debug(
+            f"get_historical_data: Token={instrument_token}, "
+            f"From={from_date.strftime('%Y-%m-%d %H:%M')}, "
+            f"To={to_date.strftime('%Y-%m-%d %H:%M')}, "
+            f"Interval={interval}"
+        )
+
+        # Use retry wrapper
+        data = self._retry_api_call(
+            self.kite.historical_data,
+            "get_historical_data",
+            instrument_token=instrument_token,
+            from_date=from_date,
+            to_date=to_date,
+            interval=interval
+        )
+
+        if data:
+            self.logger.debug(f"get_historical_data: Retrieved {len(data)} candles")
+        else:
+            self.logger.warning("get_historical_data: No data retrieved")
+
+        return data
 
     def get_instruments(self, exchange=EXCHANGE_NSE):
-        """Get list of instruments for an exchange."""
+        """
+        Get list of instruments for an exchange with retry logic.
+
+        Args:
+            exchange: Exchange name (NSE, NFO, etc.)
+
+        Returns:
+            List of instrument dicts, or None if failed
+        """
         if not self.connected:
+            self.logger.debug("get_instruments: Not connected to broker")
             return None
 
-        try:
-            instruments = self.kite.instruments(exchange)
-            return instruments
-        except Exception as e:
-            log_error("EXECUTOR", f"Failed to get instruments: {str(e)}")
-            return None
+        self.logger.debug(f"get_instruments: Fetching instruments for {exchange}")
+
+        # Use retry wrapper
+        instruments = self._retry_api_call(
+            self.kite.instruments,
+            "get_instruments",
+            exchange
+        )
+
+        if instruments:
+            self.logger.debug(f"get_instruments: Retrieved {len(instruments)} instruments")
+        else:
+            self.logger.warning(f"get_instruments: No instruments for {exchange}")
+
+        return instruments
 
     def get_instrument_token(self, symbol, exchange=EXCHANGE_NSE):
         """Get instrument token for a symbol."""
