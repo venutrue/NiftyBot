@@ -177,12 +177,37 @@ class BankNiftyBot:
             days_until_wednesday = 7
 
         expiry_date = today + datetime.timedelta(days=days_until_wednesday)
-        return expiry_date.strftime("%y%b%d").upper()
+        return expiry_date
 
     def get_option_symbol(self, strike, option_type):
-        """Build BANKNIFTY option symbol."""
-        expiry = self.get_weekly_expiry()
-        return f"BANKNIFTY{expiry}{strike}{option_type}"
+        """
+        Build BANKNIFTY option symbol in Kite/NSE format.
+        Format: BANKNIFTY + YY + M + DD + STRIKE + CE/PE
+        Where M is single-letter month code and DD is 2-digit day.
+        """
+        expiry_date = self.get_weekly_expiry()
+
+        # NSE month codes for weekly options
+        month_codes = {
+            1: 'J',   # January
+            2: 'F',   # February
+            3: 'M',   # March
+            4: 'A',   # April
+            5: 'Y',   # May
+            6: 'N',   # June
+            7: 'L',   # July
+            8: 'G',   # August
+            9: 'S',   # September
+            10: 'O',  # October
+            11: 'V',  # November
+            12: 'D'   # December
+        }
+
+        year = expiry_date.strftime("%y")
+        month_code = month_codes[expiry_date.month]
+        day = expiry_date.strftime("%d")
+
+        return f"BANKNIFTY{year}{month_code}{day}{int(strike)}{option_type}"
 
     def calculate_lots(self, premium):
         """
