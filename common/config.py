@@ -221,3 +221,15 @@ AUDIT_LOG_DIR = "logs/audit"
 LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_FORMAT = "%(asctime)s | %(levelname)-5s | %(name)-10s | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+##############################################
+# NETWORK & RETRY CONFIGURATION
+##############################################
+
+# API retry settings for network errors
+API_MAX_RETRIES = 3                    # Maximum retry attempts for API calls
+API_RETRY_DELAY = 2                    # Initial retry delay in seconds (doubles each retry)
+API_TIMEOUT = 30                       # Request timeout in seconds
+
+# Specific retry delays (exponential backoff): 2s, 4s, 8s
+# Total max wait time: ~14 seconds for 3 retries
