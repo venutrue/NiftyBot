@@ -180,13 +180,14 @@ class BacktestEngine:
         """
         Calculate position size based on risk management.
 
-        Uses Kelly Criterion-inspired position sizing:
-        - Risk exactly config.max_risk_per_trade of capital
+        Uses fixed fractional position sizing based on INITIAL capital:
+        - Risk exactly config.max_risk_per_trade of STARTING capital (not growing capital)
+        - Prevents exponential position size growth from compounding
         - Respects max capital deployed limit
         - Returns number of lots to trade
         """
-        # Max risk amount
-        max_risk_amount = self.capital * self.config.max_risk_per_trade
+        # Max risk amount (based on INITIAL capital to prevent exponential growth)
+        max_risk_amount = self.starting_capital * self.config.max_risk_per_trade
 
         # Stop loss distance
         stop_loss_distance = premium * self.config.stop_loss_percent
