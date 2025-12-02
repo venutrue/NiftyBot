@@ -341,13 +341,12 @@ class BankNiftyBot:
 
     def check_entry_conditions(self, df):
         """
-        Check if all entry conditions are met across multiple strikes.
+        Check if all entry conditions are met for ATM option.
 
-        Enhanced Entry Logic:
+        Entry Logic:
         - Supertrend and ADX checked on SPOT data
-        - VWAP checked on MULTIPLE strikes (not just ATM)
-        - Identifies best strike with strongest smart money signal
-        - Detects accumulation patterns across option chain
+        - VWAP checked on ATM option only (single position trading)
+        - Scans full chain for visibility but only trades ATM
 
         Returns:
             'BUY_CE', 'BUY_PE', or None
@@ -385,10 +384,25 @@ class BankNiftyBot:
                 )
                 return None
 
-            # Count strikes with positive signals
+            # Find ATM strike in the results
+            atm_data = None
+            for strike_data in ce_strikes:
+                if strike_data['strike'] == atm_strike:
+                    atm_data = strike_data
+                    break
+
+            if not atm_data:
+                self.logger.info(
+                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"CE: ATM data not available"
+                )
+                return None
+
+            # Count strikes with positive signals (for visibility)
             positive_signals = [s for s in ce_strikes if s['signal']]
 
-            # Log chain analysis
+            # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
                 f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
             )
@@ -398,25 +412,21 @@ class BankNiftyBot:
 
             for strike_data in ce_strikes[:3]:  # Show top 3 strikes
                 signal_icon = "✓" if strike_data['signal'] else "✗"
+                atm_marker = " [ATM - TRADING]" if strike_data['strike'] == atm_strike else ""
                 self.logger.info(
                     f"  {signal_icon} {strike_data['position']:3} {strike_data['strike']:5} | "
                     f"Premium: {strike_data['premium']:6.2f} | VWAP: {strike_data['vwap']:6.2f} | "
-                    f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}"
+                    f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}{atm_marker}"
                 )
 
-            # Entry condition: At least 2 strikes showing accumulation (Premium > VWAP)
-            if len(positive_signals) >= 2:
-                best_strike = positive_signals[0]
+            # Entry condition: ATM Premium > VWAP (simple, clean)
+            if atm_data['signal']:
                 self.logger.info(
-                    f">>> CE SIGNAL DETECTED: {len(positive_signals)} strikes show accumulation"
+                    f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
+                    f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                    f"(+{atm_data['vwap_pct']:.1f}%) | "
+                    f"Supertrend Bullish | ADX {current_adx:.1f}"
                 )
-                self.logger.info(
-                    f">>> Best Entry: {best_strike['symbol']} ({best_strike['position']}) | "
-                    f"Premium {best_strike['premium']:.2f} > VWAP {best_strike['vwap']:.2f} "
-                    f"(+{best_strike['vwap_pct']:.1f}%)"
-                )
-                # Store best strike for signal creation
-                self._best_strike = best_strike
                 return 'BUY_CE'
 
         # Scan option chain for PE if Supertrend is Bearish
@@ -431,10 +441,25 @@ class BankNiftyBot:
                 )
                 return None
 
-            # Count strikes with positive signals
+            # Find ATM strike in the results
+            atm_data = None
+            for strike_data in pe_strikes:
+                if strike_data['strike'] == atm_strike:
+                    atm_data = strike_data
+                    break
+
+            if not atm_data:
+                self.logger.info(
+                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"PE: ATM data not available"
+                )
+                return None
+
+            # Count strikes with positive signals (for visibility)
             positive_signals = [s for s in pe_strikes if s['signal']]
 
-            # Log chain analysis
+            # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
                 f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
             )
@@ -444,25 +469,21 @@ class BankNiftyBot:
 
             for strike_data in pe_strikes[:3]:  # Show top 3 strikes
                 signal_icon = "✓" if strike_data['signal'] else "✗"
+                atm_marker = " [ATM - TRADING]" if strike_data['strike'] == atm_strike else ""
                 self.logger.info(
                     f"  {signal_icon} {strike_data['position']:3} {strike_data['strike']:5} | "
                     f"Premium: {strike_data['premium']:6.2f} | VWAP: {strike_data['vwap']:6.2f} | "
-                    f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}"
+                    f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}{atm_marker}"
                 )
 
-            # Entry condition: At least 2 strikes showing accumulation (Premium > VWAP)
-            if len(positive_signals) >= 2:
-                best_strike = positive_signals[0]
+            # Entry condition: ATM Premium > VWAP (simple, clean)
+            if atm_data['signal']:
                 self.logger.info(
-                    f">>> PE SIGNAL DETECTED: {len(positive_signals)} strikes show accumulation"
+                    f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
+                    f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                    f"(+{atm_data['vwap_pct']:.1f}%) | "
+                    f"Supertrend Bearish | ADX {current_adx:.1f}"
                 )
-                self.logger.info(
-                    f">>> Best Entry: {best_strike['symbol']} ({best_strike['position']}) | "
-                    f"Premium {best_strike['premium']:.2f} > VWAP {best_strike['vwap']:.2f} "
-                    f"(+{best_strike['vwap_pct']:.1f}%)"
-                )
-                # Store best strike for signal creation
-                self._best_strike = best_strike
                 return 'BUY_PE'
 
         return None
