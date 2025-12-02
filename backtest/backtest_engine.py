@@ -382,6 +382,9 @@ class BacktestEngine:
         """
         Check if bot generates entry signal at current time.
 
+        Simplified backtest mode - uses only spot indicators (ADX, Supertrend)
+        without fetching historical option data which isn't available.
+
         Returns: 'BUY_CE', 'BUY_PE', or None
         """
         # Skip if not enough data for indicators
@@ -394,13 +397,37 @@ class BacktestEngine:
         if current_time.hour > 14 or (current_time.hour == 14 and current_time.minute > 30):
             return None
 
-        # Use bot's entry logic
-        try:
-            signal = self.bot.check_entry_conditions(df_slice)
-            return signal
-        except Exception as e:
-            self.logger.debug(f"Error checking bot signal: {e}")
+        # Get current values
+        current_adx = df_slice['ADX'].iloc[-1]
+        current_price = df_slice['close'].iloc[-1]
+
+        # Check indicators (already imported at module level)
+        st_bullish = is_supertrend_bullish(df_slice)
+        st_bearish = is_supertrend_bearish(df_slice)
+        atm_strike = get_atm_strike(current_price)
+
+        # Check ADX threshold (strategy parameter)
+        adx_threshold = self.config.strategy.adx_threshold
+
+        if pd.isna(current_adx) or current_adx < adx_threshold:
             return None
+
+        # Generate signal based on Supertrend direction
+        # In backtest, we skip the option VWAP check and rely on spot indicators
+        if st_bullish:
+            self.logger.debug(
+                f"SIGNAL: BUY_CE | Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                f"ADX: {current_adx:.1f} | ST: Bullish"
+            )
+            return 'BUY_CE'
+        elif st_bearish:
+            self.logger.debug(
+                f"SIGNAL: BUY_PE | Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                f"ADX: {current_adx:.1f} | ST: Bearish"
+            )
+            return 'BUY_PE'
+
+        return None
 
     def _enter_trade(self, signal: str, entry_time, spot_price: float) -> Optional[Trade]:
         """Enter a new trade based on signal."""
