@@ -259,13 +259,93 @@ class NiftyBot:
 
         return None
 
+    def scan_option_chain(self, atm_strike, option_type, current_price):
+        """
+        Scan multiple strikes around ATM to detect smart money accumulation.
+
+        Smart money spreads positions across strikes for:
+        - Risk distribution
+        - Stealth trading (avoid detection)
+        - Building spreads and hedges
+        - Managing liquidity impact
+
+        Args:
+            atm_strike: ATM strike price
+            option_type: 'CE' or 'PE'
+            current_price: Current spot price
+
+        Returns:
+            List of dicts with strike analysis, sorted by signal strength
+        """
+        # Check ATM and surrounding strikes (±2 strikes)
+        # NIFTY strikes are in 50 increments
+        strike_offsets = [-100, -50, 0, 50, 100]  # ATM-2, ATM-1, ATM, ATM+1, ATM+2
+
+        strikes_data = []
+
+        for offset in strike_offsets:
+            strike = atm_strike + offset
+            symbol = self.get_option_symbol(strike, option_type)
+
+            # Fetch option data with VWAP
+            opt_data = self.fetch_option_data(symbol)
+            if opt_data is None or len(opt_data) < 5:
+                continue
+
+            premium = opt_data['close'].iloc[-1]
+            vwap = opt_data['vwap'].iloc[-1]
+            volume = opt_data['volume'].iloc[-1]
+            avg_volume = opt_data['volume'].mean()
+
+            # Calculate signal strength metrics
+            vwap_diff = premium - vwap
+            vwap_pct = ((premium - vwap) / vwap * 100) if vwap > 0 else 0
+            volume_surge = (volume / avg_volume) if avg_volume > 0 else 1
+
+            # Determine position type relative to spot
+            if option_type == 'CE':
+                if strike < current_price:
+                    position = 'ITM'
+                elif strike == atm_strike:
+                    position = 'ATM'
+                else:
+                    position = 'OTM'
+            else:  # PE
+                if strike > current_price:
+                    position = 'ITM'
+                elif strike == atm_strike:
+                    position = 'ATM'
+                else:
+                    position = 'OTM'
+
+            strikes_data.append({
+                'strike': strike,
+                'symbol': symbol,
+                'premium': premium,
+                'vwap': vwap,
+                'vwap_diff': vwap_diff,
+                'vwap_pct': vwap_pct,
+                'volume': volume,
+                'avg_volume': avg_volume,
+                'volume_surge': volume_surge,
+                'position': position,
+                'signal': vwap_diff > 0  # Smart money accumulation if premium > VWAP
+            })
+
+        # Sort by VWAP percentage difference (strongest accumulation first)
+        strikes_data.sort(key=lambda x: x['vwap_pct'], reverse=True)
+
+        return strikes_data
+
     def check_entry_conditions(self, df):
         """
-        Check if all entry conditions are met.
+        Check if all entry conditions are met across multiple strikes.
 
-        Entry Logic:
+        Enhanced Entry Logic:
         - Supertrend and ADX checked on SPOT data
-        - VWAP checked on OPTION data (specific strike)
+        - VWAP checked on MULTIPLE strikes (not just ATM)
+        - Identifies best strike with strongest smart money signal
+        - Detects accumulation patterns across option chain
 
         Returns:
             'BUY_CE', 'BUY_PE', or None
@@ -291,65 +371,97 @@ class NiftyBot:
             )
             return None
 
-        # Build option symbols
-        ce_symbol = self.get_option_symbol(atm_strike, "CE")
-        pe_symbol = self.get_option_symbol(atm_strike, "PE")
-
-        # Check CE conditions if Supertrend is Bullish
+        # Scan option chain for CE if Supertrend is Bullish
         if st_bullish:
-            ce_data = self.fetch_option_data(ce_symbol)
-            if ce_data is not None and len(ce_data) > 5:
-                ce_premium = ce_data['close'].iloc[-1]
-                ce_vwap = ce_data['vwap'].iloc[-1]
-                vwap_status = "Above" if ce_premium > ce_vwap else "Below"
+            ce_strikes = self.scan_option_chain(atm_strike, "CE", current_price)
 
+            if not ce_strikes:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
                     f"ADX: {current_adx:.1f} | ST: {st_status} | "
-                    f"CE: {ce_premium:.2f} vs VWAP: {ce_vwap:.2f} ({vwap_status})"
+                    f"CE: No option data available"
                 )
+                return None
 
-                # BUY CE: Premium > VWAP (smart money buying)
-                if ce_premium > ce_vwap:
-                    self.logger.info(
-                        f">>> CE SIGNAL: {ce_symbol} | Premium {ce_premium:.2f} > VWAP {ce_vwap:.2f} | "
-                        f"Supertrend Bullish | ADX {current_adx:.1f}"
-                    )
-                    return 'BUY_CE'
-            else:
+            # Count strikes with positive signals
+            positive_signals = [s for s in ce_strikes if s['signal']]
+
+            # Log chain analysis
+            self.logger.info(
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
+            )
+            self.logger.info(
+                f"CE Chain Analysis ({len(positive_signals)}/{len(ce_strikes)} strikes above VWAP):"
+            )
+
+            for strike_data in ce_strikes[:3]:  # Show top 3 strikes
+                signal_icon = "✓" if strike_data['signal'] else "✗"
                 self.logger.info(
-                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
-                    f"CE VWAP: No data for {ce_symbol}"
+                    f"  {signal_icon} {strike_data['position']:3} {strike_data['strike']:5} | "
+                    f"Premium: {strike_data['premium']:6.2f} | VWAP: {strike_data['vwap']:6.2f} | "
+                    f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}"
                 )
 
-        # Check PE conditions if Supertrend is Bearish
+            # Entry condition: At least 2 strikes showing accumulation (Premium > VWAP)
+            if len(positive_signals) >= 2:
+                best_strike = positive_signals[0]
+                self.logger.info(
+                    f">>> CE SIGNAL DETECTED: {len(positive_signals)} strikes show accumulation"
+                )
+                self.logger.info(
+                    f">>> Best Entry: {best_strike['symbol']} ({best_strike['position']}) | "
+                    f"Premium {best_strike['premium']:.2f} > VWAP {best_strike['vwap']:.2f} "
+                    f"(+{best_strike['vwap_pct']:.1f}%)"
+                )
+                # Store best strike for signal creation
+                self._best_strike = best_strike
+                return 'BUY_CE'
+
+        # Scan option chain for PE if Supertrend is Bearish
         elif st_bearish:
-            pe_data = self.fetch_option_data(pe_symbol)
-            if pe_data is not None and len(pe_data) > 5:
-                pe_premium = pe_data['close'].iloc[-1]
-                pe_vwap = pe_data['vwap'].iloc[-1]
-                vwap_status = "Above" if pe_premium > pe_vwap else "Below"
+            pe_strikes = self.scan_option_chain(atm_strike, "PE", current_price)
 
+            if not pe_strikes:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
                     f"ADX: {current_adx:.1f} | ST: {st_status} | "
-                    f"PE: {pe_premium:.2f} vs VWAP: {pe_vwap:.2f} ({vwap_status})"
+                    f"PE: No option data available"
+                )
+                return None
+
+            # Count strikes with positive signals
+            positive_signals = [s for s in pe_strikes if s['signal']]
+
+            # Log chain analysis
+            self.logger.info(
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
+            )
+            self.logger.info(
+                f"PE Chain Analysis ({len(positive_signals)}/{len(pe_strikes)} strikes above VWAP):"
+            )
+
+            for strike_data in pe_strikes[:3]:  # Show top 3 strikes
+                signal_icon = "✓" if strike_data['signal'] else "✗"
+                self.logger.info(
+                    f"  {signal_icon} {strike_data['position']:3} {strike_data['strike']:5} | "
+                    f"Premium: {strike_data['premium']:6.2f} | VWAP: {strike_data['vwap']:6.2f} | "
+                    f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}"
                 )
 
-                # BUY PE: Premium > VWAP (smart money buying)
-                if pe_premium > pe_vwap:
-                    self.logger.info(
-                        f">>> PE SIGNAL: {pe_symbol} | Premium {pe_premium:.2f} > VWAP {pe_vwap:.2f} | "
-                        f"Supertrend Bearish | ADX {current_adx:.1f}"
-                    )
-                    return 'BUY_PE'
-            else:
+            # Entry condition: At least 2 strikes showing accumulation (Premium > VWAP)
+            if len(positive_signals) >= 2:
+                best_strike = positive_signals[0]
                 self.logger.info(
-                    f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
-                    f"PE VWAP: No data for {pe_symbol}"
+                    f">>> PE SIGNAL DETECTED: {len(positive_signals)} strikes show accumulation"
                 )
+                self.logger.info(
+                    f">>> Best Entry: {best_strike['symbol']} ({best_strike['position']}) | "
+                    f"Premium {best_strike['premium']:.2f} > VWAP {best_strike['vwap']:.2f} "
+                    f"(+{best_strike['vwap_pct']:.1f}%)"
+                )
+                # Store best strike for signal creation
+                self._best_strike = best_strike
+                return 'BUY_PE'
 
         return None
 
