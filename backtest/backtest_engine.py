@@ -202,13 +202,13 @@ class BacktestEngine:
         # Ensure at least 1 lot
         lots = max(1, lots)
 
-        # Check max capital deployed
+        # Check max capital deployed (use STARTING capital to prevent position size growth)
         position_value = premium * lots * lot_size
         deployed_capital = sum(t.entry_cost for t in self.open_trades)
 
-        if deployed_capital + position_value > self.capital * self.config.max_capital_deployed:
+        if deployed_capital + position_value > self.starting_capital * self.config.max_capital_deployed:
             # Reduce position size
-            available = self.capital * self.config.max_capital_deployed - deployed_capital
+            available = self.starting_capital * self.config.max_capital_deployed - deployed_capital
             lots = max(1, int(available / (premium * lot_size)))
 
         return lots * lot_size
