@@ -168,16 +168,39 @@ class BankNiftyBot:
         return None
 
     def get_weekly_expiry(self):
-        """Get current week's Wednesday expiry for BANKNIFTY."""
+        """
+        Get the nearest weekly expiry date from actual Kite instruments.
+
+        This method queries real expiry dates from Kite instead of calculating
+        them mathematically. This handles holidays and special cases automatically.
+
+        Returns:
+            datetime.date object for nearest expiry, or None if not found
+        """
+        instruments = self._load_nfo_instruments()
+        if not instruments:
+            self.logger.error("No instruments loaded, cannot determine expiry")
+            return None
+
         today = datetime.date.today()
-        # BANKNIFTY expires on Wednesday (weekday 2)
-        days_until_wednesday = (2 - today.weekday()) % 7
 
-        if days_until_wednesday == 0 and datetime.datetime.now().hour >= 15:
-            days_until_wednesday = 7
+        # Extract all unique expiry dates for BANKNIFTY options
+        banknifty_expiries = set()
+        for inst in instruments:
+            if inst['name'] == 'BANKNIFTY' and inst['instrument_type'] in ['CE', 'PE']:
+                expiry = inst.get('expiry')
+                if expiry and expiry >= today:
+                    banknifty_expiries.add(expiry)
 
-        expiry_date = today + datetime.timedelta(days=days_until_wednesday)
-        return expiry_date
+        if not banknifty_expiries:
+            self.logger.error(f"No BANKNIFTY expiries found >= {today}")
+            return None
+
+        # Get the nearest expiry (min of all future expiries)
+        nearest_expiry = min(banknifty_expiries)
+
+        self.logger.debug(f"Using BANKNIFTY expiry: {nearest_expiry}")
+        return nearest_expiry
 
     def get_option_symbol(self, strike, option_type):
         """
@@ -186,6 +209,9 @@ class BankNiftyBot:
         Where M is single-letter month code and DD is 2-digit day.
         """
         expiry_date = self.get_weekly_expiry()
+        if not expiry_date:
+            self.logger.error("Could not determine expiry date")
+            return None
 
         # NSE month codes for weekly options
         month_codes = {
@@ -288,6 +314,10 @@ class BankNiftyBot:
         for offset in strike_offsets:
             strike = atm_strike + offset
             symbol = self.get_option_symbol(strike, option_type)
+
+            # Skip if symbol generation failed
+            if symbol is None:
+                continue
 
             # Fetch option data with VWAP
             opt_data = self.fetch_option_data(symbol)
