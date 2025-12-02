@@ -38,23 +38,32 @@ from executor.trade_executor import KiteExecutor
 class BacktestConfig:
     """Backtesting configuration - mirrors prop firm risk management."""
 
-    def __init__(self):
+    def __init__(self, strategy_config=None):
+        # Import here to avoid circular dependency
+        from backtest.strategy_config import StrategyConfig
+
+        # Use provided strategy config or create default
+        if strategy_config is None:
+            strategy_config = StrategyConfig()
+
+        self.strategy = strategy_config
+
         # Capital management
-        self.initial_capital = 500000  # ₹5 Lakh
-        self.max_risk_per_trade = 0.01  # 1% of capital per trade
-        self.max_daily_loss = 0.03  # 3% max loss per day
-        self.max_capital_deployed = 0.30  # Max 30% in positions simultaneously
+        self.initial_capital = strategy_config.initial_capital
+        self.max_risk_per_trade = strategy_config.max_risk_per_trade
+        self.max_daily_loss = strategy_config.max_daily_loss
+        self.max_capital_deployed = strategy_config.max_capital_deployed
 
         # Position management
-        self.max_positions = 3  # Maximum 3 positions at once
-        self.stop_loss_percent = 0.20  # 20% stop loss
-        self.target_percent = 0.40  # 40% target (2:1 risk:reward)
-        self.trailing_stop_activation = 0.30  # Trail after 30% profit
-        self.trailing_stop_distance = 0.10  # Trail 10% below max
+        self.max_positions = strategy_config.max_positions
+        self.stop_loss_percent = strategy_config.stop_loss_percent
+        self.target_percent = strategy_config.target_percent
+        self.trailing_stop_activation = strategy_config.trailing_stop_activation
+        self.trailing_stop_distance = strategy_config.trailing_stop_distance
 
         # Execution assumptions
-        self.slippage_percent = 0.005  # 0.5% slippage
-        self.commission_per_trade = 40  # ₹40 per trade (Zerodha approx)
+        self.slippage_percent = strategy_config.slippage_percent
+        self.commission_per_trade = strategy_config.commission_per_trade
 
         # Backtest parameters
         self.start_date = datetime.datetime.now() - datetime.timedelta(days=90)  # 3 months
@@ -263,15 +272,212 @@ class BacktestEngine:
 
     def _simulate(self, spot_data: pd.DataFrame):
         """Simulate trading on historical data."""
-        # TODO: Implement full simulation logic
-        # This is a placeholder - full implementation coming next
-        pass
+        self.logger.info("Starting simulation...")
+
+        daily_loss_today = 0
+        current_date = None
+
+        for idx, row in spot_data.iterrows():
+            current_time = row['date']
+            current_price = row['close']
+
+            # Reset daily loss tracking at start of new day
+            if current_date != current_time.date():
+                current_date = current_time.date()
+                daily_loss_today = 0
+                self.logger.debug(f"New trading day: {current_date}")
+
+            # Update existing trades
+            self._update_open_trades(row, current_time, current_price)
+
+            # Check daily loss limit
+            if daily_loss_today <= -self.config.max_daily_loss * self.starting_capital:
+                self.logger.warning(f"Daily loss limit hit on {current_date}")
+                continue
+
+            # Check if we can enter new positions
+            if len(self.open_trades) >= self.config.max_positions:
+                continue
+
+            # Check for entry signals from bot
+            signal = self._check_bot_signal(spot_data.iloc[:idx+1], current_time)
+
+            if signal:
+                # Get option data and enter trade
+                trade = self._enter_trade(signal, current_time, current_price)
+                if trade:
+                    self.open_trades.append(trade)
+                    self.logger.info(
+                        f"ENTRY: {trade.symbol} @ ₹{trade.entry_price:.2f} "
+                        f"x {trade.quantity} | SL: ₹{trade.stop_loss:.2f} | "
+                        f"Target: ₹{trade.target:.2f}"
+                    )
+
+            # Update equity curve
+            open_pnl = sum((row['close'] - t.entry_price) * t.quantity for t in self.open_trades)
+            current_equity = self.capital + open_pnl
+            self.equity_curve.append(current_equity)
+
+        # Close any remaining open trades at end
+        self._close_all_trades(spot_data.iloc[-1], "END_OF_BACKTEST")
+
+        self.logger.info(f"Simulation complete. Total trades: {len(self.closed_trades)}")
+
+    def _update_open_trades(self, row, current_time, current_price):
+        """Update all open trades and check for exits."""
+        trades_to_close = []
+
+        for trade in self.open_trades:
+            # Simulate option premium movement (simplified: correlated to spot)
+            # In reality, option prices depend on spot, IV, time decay, etc.
+            # For now, we'll use a simple correlation factor
+            option_price = self._estimate_option_price(trade, current_price)
+
+            # Update trailing stop
+            trade.update_trailing_stop(option_price, self.config)
+
+            # Check exit conditions
+            if trade.check_exit(option_price, current_time):
+                trades_to_close.append(trade)
+
+        # Close trades that hit exit conditions
+        for trade in trades_to_close:
+            self.open_trades.remove(trade)
+
+            # Finalize the trade
+            trade.close(trade.exit_price, trade.exit_time, trade.exit_reason, self.config)
+            self.closed_trades.append(trade)
+
+            # Update capital
+            self.capital += trade.pnl
+
+            self.logger.info(
+                f"EXIT: {trade.symbol} @ ₹{trade.exit_price:.2f} | "
+                f"Reason: {trade.exit_reason} | P&L: ₹{trade.pnl:,.0f} ({trade.pnl_percent:+.2f}%)"
+            )
+
+    def _estimate_option_price(self, trade: Trade, current_spot: float) -> float:
+        """
+        Estimate option price based on spot movement.
+
+        Simplified model:
+        - ATM options have ~1:1 delta initially
+        - Price moves roughly in line with spot
+        - Ignores IV, theta, gamma for simplicity
+
+        In production, use actual historical option data or BS model.
+        """
+        # Calculate spot movement percentage
+        # Note: We need the original spot price at entry
+        # For now, estimate based on entry price relationship
+        spot_move_percent = (current_spot - trade.entry_price) / trade.entry_price
+
+        # Option moves with approximately 70% of spot move (simplified delta)
+        # ATM options typically have delta around 0.5-0.7
+        estimated_price = trade.entry_price * (1 + spot_move_percent * 0.7)
+
+        return max(1, estimated_price)  # Options can't go below ₹1
+
+    def _check_bot_signal(self, df_slice: pd.DataFrame, current_time) -> Optional[str]:
+        """
+        Check if bot generates entry signal at current time.
+
+        Returns: 'BUY_CE', 'BUY_PE', or None
+        """
+        # Skip if not enough data for indicators
+        if len(df_slice) < 20:
+            return None
+
+        # Check if within trading hours (9:20 AM - 2:30 PM)
+        if current_time.hour < 9 or (current_time.hour == 9 and current_time.minute < 20):
+            return None
+        if current_time.hour > 14 or (current_time.hour == 14 and current_time.minute > 30):
+            return None
+
+        # Use bot's entry logic
+        try:
+            signal = self.bot.check_entry_conditions(df_slice)
+            return signal
+        except Exception as e:
+            self.logger.debug(f"Error checking bot signal: {e}")
+            return None
+
+    def _enter_trade(self, signal: str, entry_time, spot_price: float) -> Optional[Trade]:
+        """Enter a new trade based on signal."""
+        try:
+            # Get ATM strike
+            atm_strike = get_atm_strike(
+                spot_price,
+                NIFTY_LOT_SIZE if 'NIFTY' in self.bot.name else BANKNIFTY_LOT_SIZE
+            )
+
+            # Determine option type
+            option_type = "CE" if signal == "BUY_CE" else "PE"
+
+            # Get option symbol
+            symbol = self.bot.get_option_symbol(atm_strike, option_type)
+
+            # Estimate option premium (simplified: 1-2% of spot for ATM)
+            # In production, use actual historical option data
+            premium = spot_price * 0.015  # 1.5% of spot
+
+            # Apply slippage on entry
+            entry_price = premium * (1 + self.config.slippage_percent)
+
+            # Calculate position size
+            quantity = self.calculate_position_size(entry_price)
+
+            # Calculate stop loss and target
+            stop_loss = entry_price * (1 - self.config.stop_loss_percent)
+            target = entry_price * (1 + self.config.target_percent)
+
+            # Create trade
+            trade = Trade(
+                entry_time=entry_time,
+                symbol=symbol,
+                direction=signal,
+                entry_price=entry_price,
+                quantity=quantity,
+                stop_loss=stop_loss,
+                target=target
+            )
+
+            return trade
+
+        except Exception as e:
+            self.logger.error(f"Error entering trade: {e}")
+            return None
+
+    def _close_all_trades(self, last_row, reason: str):
+        """Close all remaining open trades."""
+        for trade in self.open_trades:
+            exit_price = self._estimate_option_price(trade, last_row['close'])
+            trade.close(exit_price, last_row['date'], reason, self.config)
+            self.closed_trades.append(trade)
+            self.capital += trade.pnl
+
+            self.logger.info(
+                f"EXIT: {trade.symbol} @ ₹{exit_price:.2f} | "
+                f"Reason: {reason} | P&L: ₹{trade.pnl:,.0f}"
+            )
+
+        self.open_trades = []
 
     def _calculate_metrics(self):
         """Calculate performance metrics."""
-        # TODO: Implement metrics calculation
-        # This is a placeholder
-        pass
+        if not self.closed_trades:
+            self.logger.warning("No closed trades to analyze")
+            return None
+
+        # Metrics are calculated by PerformanceMetrics class
+        # This is just a wrapper that returns the results
+        return {
+            'total_trades': len(self.closed_trades),
+            'capital_start': self.starting_capital,
+            'capital_end': self.capital,
+            'total_pnl': self.capital - self.starting_capital,
+            'return_percent': ((self.capital - self.starting_capital) / self.starting_capital) * 100
+        }
 
 
 if __name__ == "__main__":

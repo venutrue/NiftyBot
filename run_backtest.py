@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
 """
 BACKTESTING RUNNER
-Run backtests with professional risk management
+Run backtests with professional risk management and configurable strategies
 
 Usage:
-    python run_backtest.py --bot NIFTYBOT --days 90
-    python run_backtest.py --bot BANKNIFTYBOT --days 30
-    python run_backtest.py --all  # Test all bots
+    # List available strategy presets
+    python run_backtest.py --list-strategies
 
-Examples with custom parameters:
-    python run_backtest.py --bot NIFTYBOT --capital 1000000 --risk 0.02
+    # Basic backtest with balanced strategy
+    python run_backtest.py --bot NIFTYBOT --days 90
+
+    # Use a strategy preset
+    python run_backtest.py --bot NIFTYBOT --strategy conservative
+    python run_backtest.py --bot NIFTYBOT --strategy aggressive
+    python run_backtest.py --bot NIFTYBOT --strategy scalper
+    python run_backtest.py --bot NIFTYBOT --strategy trend_follower
+
+    # Custom parameters (overrides preset)
+    python run_backtest.py --bot NIFTYBOT --strategy conservative --capital 1000000
+    python run_backtest.py --bot NIFTYBOT --strategy aggressive --risk 0.02
+
+    # Test all bots
+    python run_backtest.py --all --strategy balanced
+
+Available Strategies:
+    - conservative: Lower risk, higher quality signals
+    - balanced: Default settings, good starting point
+    - aggressive: Higher risk, more trades
+    - scalper: Quick in/out with tight stops
+    - trend_follower: Ride big moves with trailing stops
+    - custom: Use CLI parameters only
 """
 
 import argparse
@@ -18,6 +38,7 @@ from datetime import datetime, timedelta
 
 from backtest.backtest_engine import BacktestEngine, BacktestConfig
 from backtest.performance_metrics import PerformanceMetrics
+from backtest.strategy_config import StrategyConfig, StrategyLibrary
 from bots.niftybot import NiftyBot
 from bots.bankniftybot import BankNiftyBot
 
@@ -71,6 +92,20 @@ def parse_args():
         help='Maximum simultaneous positions (default: 3)'
     )
 
+    parser.add_argument(
+        '--strategy',
+        type=str,
+        choices=['conservative', 'balanced', 'aggressive', 'scalper', 'trend_follower', 'custom'],
+        default='balanced',
+        help='Strategy preset to use (default: balanced)'
+    )
+
+    parser.add_argument(
+        '--list-strategies',
+        action='store_true',
+        help='List all available strategy presets and exit'
+    )
+
     return parser.parse_args()
 
 
@@ -106,12 +141,37 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    # Create configuration
-    config = BacktestConfig()
-    config.initial_capital = args.capital
-    config.max_risk_per_trade = args.risk
-    config.stop_loss_percent = args.stop_loss
-    config.max_positions = args.max_positions
+    # Handle list-strategies flag
+    if args.list_strategies:
+        StrategyLibrary.list_presets()
+        StrategyLibrary.compare_presets()
+        return
+
+    # Load strategy configuration
+    if args.strategy == 'custom':
+        # Use command-line parameters for custom strategy
+        strategy_config = StrategyConfig()
+        strategy_config.initial_capital = args.capital
+        strategy_config.max_risk_per_trade = args.risk
+        strategy_config.stop_loss_percent = args.stop_loss
+        strategy_config.max_positions = args.max_positions
+        print(f"\n📝 Using CUSTOM strategy with CLI parameters")
+    else:
+        # Load preset strategy
+        strategy_config = StrategyLibrary.load(args.strategy)
+        # Override with CLI parameters if provided
+        if args.capital != 500000:
+            strategy_config.initial_capital = args.capital
+        if args.risk != 0.01:
+            strategy_config.max_risk_per_trade = args.risk
+        if args.stop_loss != 0.20:
+            strategy_config.stop_loss_percent = args.stop_loss
+        if args.max_positions != 3:
+            strategy_config.max_positions = args.max_positions
+        print(f"\n📝 Using '{args.strategy.upper()}' strategy preset")
+
+    # Create backtest configuration
+    config = BacktestConfig(strategy_config=strategy_config)
     config.start_date = datetime.now() - timedelta(days=args.days)
     config.end_date = datetime.now()
 
@@ -119,10 +179,23 @@ def main():
     print("BACKTEST CONFIGURATION")
     print(f"{'=' * 80}")
     print(f"Period: {config.start_date.date()} to {config.end_date.date()} ({args.days} days)")
-    print(f"Initial Capital: ₹{config.initial_capital:,.0f}")
-    print(f"Risk per Trade: {config.max_risk_per_trade * 100:.1f}%")
-    print(f"Stop Loss: {config.stop_loss_percent * 100:.0f}%")
-    print(f"Max Positions: {config.max_positions}")
+    print(f"\nCAPITAL & RISK:")
+    print(f"  Initial Capital: ₹{config.initial_capital:,.0f}")
+    print(f"  Risk per Trade: {config.max_risk_per_trade * 100:.2f}%")
+    print(f"  Max Daily Loss: {config.max_daily_loss * 100:.1f}%")
+    print(f"  Max Capital Deployed: {config.max_capital_deployed * 100:.0f}%")
+    print(f"\nPOSITION MANAGEMENT:")
+    print(f"  Stop Loss: {config.stop_loss_percent * 100:.0f}%")
+    print(f"  Target: {config.target_percent * 100:.0f}%")
+    print(f"  Max Positions: {config.max_positions}")
+    print(f"  Trailing Stop: {'Enabled' if config.strategy.enable_trailing_stop else 'Disabled'}")
+    print(f"\nINDICATOR SETTINGS:")
+    print(f"  ADX Threshold: {config.strategy.adx_threshold}")
+    print(f"  Supertrend Period: {config.strategy.supertrend_period}")
+    print(f"  Supertrend Multiplier: {config.strategy.supertrend_multiplier}")
+    print(f"\nEXECUTION:")
+    print(f"  Slippage: {config.slippage_percent * 100:.2f}%")
+    print(f"  Commission: ₹{config.commission_per_trade:.0f} per trade")
     print(f"{'=' * 80}\n")
 
     # Run backtests
