@@ -20,6 +20,7 @@ from common.logger import (
     setup_logger
 )
 from executor.trade_executor import TradeExecutor
+from executor.paper_executor import PaperTradeExecutor
 from bots.niftybot import NiftyBot
 from bots.bankniftybot import BankNiftyBot
 from bots.stockbot import StockBot
@@ -86,6 +87,12 @@ Examples:
         '--dry-run',
         action='store_true',
         help='Generate signals without executing trades'
+    )
+
+    parser.add_argument(
+        '--paper',
+        action='store_true',
+        help='Paper trading mode (simulates trades with fake money)'
     )
 
     parser.add_argument(
@@ -270,8 +277,18 @@ def main():
     if not validate_credentials():
         sys.exit(1)
 
-    # Initialize executor
-    executor = TradeExecutor()
+    # Initialize executor (paper or live)
+    if args.paper:
+        logger.info("=" * 60)
+        logger.info("📄 PAPER TRADING MODE - NO REAL MONEY AT RISK")
+        logger.info("=" * 60)
+        executor = PaperTradeExecutor(initial_capital=200000)
+    else:
+        if args.dry_run:
+            logger.info("DRY RUN MODE - Signals only, no execution")
+        else:
+            logger.info("🔴 LIVE TRADING MODE - REAL MONEY AT RISK")
+        executor = TradeExecutor()
 
     # Connect to broker
     logger.info("Connecting to broker...")
@@ -317,6 +334,11 @@ def main():
         logger.info("Trading session complete")
         logger.info(f"Total Trades: {summary['trades']}")
         logger.info(f"Total P&L: Rs. {summary['pnl']:,.2f}")
+
+        # Print paper trading summary if applicable
+        if args.paper and hasattr(executor, 'print_summary'):
+            print("\n")
+            executor.print_summary()
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
