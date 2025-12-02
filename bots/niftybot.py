@@ -106,6 +106,27 @@ class NiftyBot:
         for inst in instruments:
             if inst['tradingsymbol'] == symbol:
                 return inst['instrument_token']
+
+        # Enhanced debugging: show similar symbols if exact match not found
+        # This helps identify symbol format issues
+        similar_symbols = []
+        for inst in instruments:
+            # Look for NIFTY options with similar characteristics
+            if inst['name'] == 'NIFTY' and inst['instrument_type'] in ['CE', 'PE']:
+                sym = inst['tradingsymbol']
+                # Check if strike price matches
+                if str(symbol.split('CE')[0].split('PE')[0][-5:]) in sym:
+                    similar_symbols.append(sym)
+                    if len(similar_symbols) >= 3:  # Show max 3 examples
+                        break
+
+        if similar_symbols:
+            self.logger.warning(
+                f"Symbol '{symbol}' not found. Similar symbols in instruments: {', '.join(similar_symbols[:3])}"
+            )
+        else:
+            self.logger.warning(f"Symbol '{symbol}' not found in NFO instruments")
+
         return None
 
     def fetch_option_data(self, symbol):

@@ -97,8 +97,8 @@ Examples:
     parser.add_argument(
         '--interval',
         type=int,
-        default=60,
-        help='Scan interval in seconds (default: 60)'
+        default=300,
+        help='Scan interval in seconds (default: 300)'
     )
 
     return parser.parse_args()
