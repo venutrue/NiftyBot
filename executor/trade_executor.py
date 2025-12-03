@@ -477,7 +477,8 @@ class TradeExecutor:
                 'quantity': signal['quantity'],
                 'stop_loss': signal.get('stop_loss'),
                 'target': signal.get('target'),
-                'source': signal.get('source')
+                'source': signal.get('source'),
+                'exchange': signal.get('exchange', EXCHANGE_NSE)
             }
 
         return order_id
@@ -494,6 +495,7 @@ class TradeExecutor:
             'source': position.get('source', 'EXECUTOR'),
             'action': TRANSACTION_SELL,
             'symbol': symbol,
+            'exchange': position.get('exchange', EXCHANGE_NSE),
             'quantity': position['quantity'],
             'order_type': ORDER_TYPE_MARKET,
             'product': PRODUCT_MIS,

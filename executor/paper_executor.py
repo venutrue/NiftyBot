@@ -64,13 +64,15 @@ class PaperTradeExecutor:
             if action == 'SELL':
                 # Handle position exit
                 reason = signal.get('reason', 'Signal generated')
-                return self.exit_position(symbol, reason)
+                exchange = signal.get('exchange', EXCHANGE_NFO)
+                return self.exit_position(symbol, reason, exchange)
 
             # Handle new position entry (BUY)
             exchange = signal.get('exchange', EXCHANGE_NFO)
+            self.logger.info(f"Entering position: {symbol} on {exchange}")
             current_price = self.get_ltp(symbol, exchange)
             if not current_price:
-                self.logger.error(f"Could not get price for {symbol}")
+                self.logger.error(f"Could not get price for {symbol} on {exchange}")
                 return None
 
             # Place paper order
@@ -86,7 +88,8 @@ class PaperTradeExecutor:
                     'quantity': signal['quantity'],
                     'stop_loss': signal.get('stop_loss'),
                     'target': signal.get('target'),
-                    'source': signal.get('source')
+                    'source': signal.get('source'),
+                    'exchange': exchange
                 }
 
                 self.logger.info(
@@ -100,13 +103,14 @@ class PaperTradeExecutor:
             self.logger.error(f"Paper trade failed: {e}")
             return None
 
-    def exit_position(self, symbol: str, reason: str = "Manual exit") -> Optional[str]:
+    def exit_position(self, symbol: str, reason: str = "Manual exit", exchange: str = EXCHANGE_NFO) -> Optional[str]:
         """
         Exit a paper position.
 
         Args:
             symbol: Trading symbol
             reason: Exit reason
+            exchange: Exchange (NSE, NFO, MCX, etc.)
 
         Returns:
             Order ID if successful
@@ -116,10 +120,16 @@ class PaperTradeExecutor:
             return None
 
         try:
+            # Get stored exchange if not provided
+            if exchange == EXCHANGE_NFO and 'exchange' in self.positions[symbol]:
+                exchange = self.positions[symbol]['exchange']
+
+            self.logger.info(f"Exiting position: {symbol} on {exchange}")
+
             # Get current market price
-            current_price = self.get_ltp(symbol, EXCHANGE_NFO)
+            current_price = self.get_ltp(symbol, exchange)
             if not current_price:
-                self.logger.error(f"Could not get price for {symbol}")
+                self.logger.error(f"Could not get price for {symbol} on {exchange}")
                 return None
 
             # Exit in paper engine
