@@ -306,6 +306,11 @@ class GoldBot:
             self.logger.debug("Insufficient data")
             return signals
 
+        # Add indicators (needed for exit checks)
+        df = supertrend(df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER)
+        df = adx(df)
+        df['ema20'] = ema(df['close'], GOLD_EMA_PERIOD)
+
         # Check exits first (always check exits before entries)
         exit_signals = self._check_exits(df)
         signals.extend(exit_signals)
@@ -425,15 +430,9 @@ class GoldBot:
         Returns signal dict or None.
         """
         try:
-            # Get current values
+            # Get current values (indicators already computed in scan())
             current_price = df['close'].iloc[-1]
-
-            # Compute indicators
-            df = supertrend(df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER)
-            df = adx(df)
-            df['ema20'] = ema(df['close'], GOLD_EMA_PERIOD)
-
-            current_adx = df['ADX'].iloc[-1]  # Uppercase ADX
+            current_adx = df['ADX'].iloc[-1]
             current_ema = df['ema20'].iloc[-1]
 
             st_bullish = is_supertrend_bullish(df)
