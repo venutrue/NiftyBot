@@ -32,7 +32,7 @@ from common.indicators import (
 GOLD_SYMBOL = "GOLDM"  # Will append expiry month
 
 # Contract specifications
-GOLD_LOT_SIZE = 100  # 100 grams
+GOLD_LOT_SIZE = 1  # 1 contract (100 grams per contract)
 GOLD_TICK_SIZE = 1   # Minimum price movement
 
 # Trading hours (MCX commodity hours)
@@ -44,12 +44,12 @@ COMMODITY_CLOSE_MINUTE = 30
 # Strategy parameters (adapted for Gold futures)
 GOLD_TIMEFRAME = "15minute"  # 15-min candles (smoother than 5-min)
 GOLD_EMA_PERIOD = 20  # Replace VWAP with 20 EMA
-GOLD_STOP_LOSS_POINTS = 250  # ₹250 SL per contract (~0.4% of ₹65,000)
+GOLD_STOP_LOSS_POINTS = 250  # ₹250 SL per contract (~0.2% of ₹128k)
 GOLD_TRAILING_STOP_POINTS = 150  # ₹150 trailing stop
 GOLD_MAX_TRADES_PER_DAY = 2  # Conservative for futures
 
-# Risk limits (adjusted for futures margin)
-GOLD_MAX_POSITION_VALUE = 40000  # Max ₹40k per trade (covers margin + buffer)
+# Risk limits (adjusted for Gold contract value ~₹128k)
+GOLD_MAX_POSITION_VALUE = 150000  # Max ₹150k per trade (allows 1 contract)
 
 ##############################################
 # GOLDBOT CLASS
