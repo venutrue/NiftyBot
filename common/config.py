@@ -75,6 +75,7 @@ BROKER = "kite"  # Options: "kite", "angel", "icici" (future)
 EXCHANGE_NSE = "NSE"
 EXCHANGE_NFO = "NFO"
 EXCHANGE_BSE = "BSE"
+EXCHANGE_MCX = "MCX"  # Multi Commodity Exchange
 
 TRANSACTION_BUY = "BUY"
 TRANSACTION_SELL = "SELL"
