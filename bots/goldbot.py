@@ -148,6 +148,33 @@ class GoldBot:
                 self.logger.error("Cannot load MCX instruments")
                 return None
 
+            # DIAGNOSTIC: Show what's actually in MCX instruments
+            self.logger.info("=== MCX INSTRUMENTS DIAGNOSTIC ===")
+
+            # Count by instrument type
+            type_counts = {}
+            for inst in instruments:
+                inst_type = inst.get('instrument_type', 'UNKNOWN')
+                type_counts[inst_type] = type_counts.get(inst_type, 0) + 1
+            self.logger.info(f"Instrument types: {type_counts}")
+
+            # Find anything with GOLD in the name
+            gold_related = [i for i in instruments if 'GOLD' in i.get('tradingsymbol', '').upper()]
+            self.logger.info(f"Found {len(gold_related)} instruments with 'GOLD' in symbol")
+
+            # Show first 10 Gold-related instruments with full details
+            self.logger.info("First 10 Gold-related instruments:")
+            for i, inst in enumerate(gold_related[:10]):
+                self.logger.info(
+                    f"  [{i+1}] Symbol: {inst.get('tradingsymbol')}, "
+                    f"Name: {inst.get('name')}, "
+                    f"Type: {inst.get('instrument_type')}, "
+                    f"Lot: {inst.get('lot_size')}, "
+                    f"Expiry: {inst.get('expiry')}"
+                )
+
+            self.logger.info("=================================")
+
             # Filter for Gold Mini contracts (100 grams)
             # Look for contracts with 'GOLDM' in name and lot_size = 100
             gold_contracts = []
@@ -165,8 +192,7 @@ class GoldBot:
 
             if not gold_contracts:
                 self.logger.error("No Gold Mini futures found in MCX instruments")
-                self.logger.info("Available instruments sample: " +
-                               str([i['tradingsymbol'] for i in instruments[:5]]))
+                self.logger.error("Filter was looking for: 'GOLDM' in symbol OR 'Gold Mini' in name, lot_size=100, type=FUT")
                 return None
 
             # Find contract with nearest expiry date after today
