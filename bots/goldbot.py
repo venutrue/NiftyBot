@@ -148,52 +148,26 @@ class GoldBot:
                 self.logger.error("Cannot load MCX instruments")
                 return None
 
-            # DIAGNOSTIC: Show what's actually in MCX instruments
-            self.logger.info("=== MCX INSTRUMENTS DIAGNOSTIC ===")
-
-            # Count by instrument type
-            type_counts = {}
-            for inst in instruments:
-                inst_type = inst.get('instrument_type', 'UNKNOWN')
-                type_counts[inst_type] = type_counts.get(inst_type, 0) + 1
-            self.logger.info(f"Instrument types: {type_counts}")
-
-            # Find anything with GOLD in the name
-            gold_related = [i for i in instruments if 'GOLD' in i.get('tradingsymbol', '').upper()]
-            self.logger.info(f"Found {len(gold_related)} instruments with 'GOLD' in symbol")
-
-            # Show first 10 Gold-related instruments with full details
-            self.logger.info("First 10 Gold-related instruments:")
-            for i, inst in enumerate(gold_related[:10]):
-                self.logger.info(
-                    f"  [{i+1}] Symbol: {inst.get('tradingsymbol')}, "
-                    f"Name: {inst.get('name')}, "
-                    f"Type: {inst.get('instrument_type')}, "
-                    f"Lot: {inst.get('lot_size')}, "
-                    f"Expiry: {inst.get('expiry')}"
-                )
-
-            self.logger.info("=================================")
-
-            # Filter for Gold Mini contracts (100 grams)
-            # Look for contracts with 'GOLDM' in name and lot_size = 100
+            # Filter for Gold futures based on actual MCX format
+            # Format: GOLDYYMMFUT (e.g., GOLD25DECFUT)
             gold_contracts = []
             for inst in instruments:
                 symbol = inst.get('tradingsymbol', '')
                 name = inst.get('name', '')
-                lot_size = inst.get('lot_size', 0)
 
-                # Match Gold Mini: symbol contains GOLDM or name contains "Gold Mini"
-                # and lot_size = 100 grams
-                if (('GOLDM' in symbol or 'Gold Mini' in name) and
-                    lot_size == 100 and
+                # Match Gold futures: symbol starts with "GOLD" and ends with "FUT"
+                # AND name is exactly "GOLD" (not GOLDGUINEA, etc.)
+                if (symbol.startswith('GOLD') and
+                    symbol.endswith('FUT') and
+                    name == 'GOLD' and
                     inst.get('instrument_type') == 'FUT'):
                     gold_contracts.append(inst)
 
             if not gold_contracts:
-                self.logger.error("No Gold Mini futures found in MCX instruments")
-                self.logger.error("Filter was looking for: 'GOLDM' in symbol OR 'Gold Mini' in name, lot_size=100, type=FUT")
+                self.logger.error("No Gold futures found in MCX instruments")
                 return None
+
+            self.logger.info(f"Found {len(gold_contracts)} Gold futures contracts")
 
             # Find contract with nearest expiry date after today
             now = datetime.datetime.now().date()
