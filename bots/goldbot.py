@@ -431,7 +431,7 @@ class GoldBot:
             # Compute indicators
             df = supertrend(df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER)
             df = adx(df)
-            df = ema(df, period=GOLD_EMA_PERIOD, column='ema20')
+            df['ema20'] = ema(df['close'], GOLD_EMA_PERIOD)
 
             current_adx = df['adx'].iloc[-1]
             current_ema = df['ema20'].iloc[-1]
