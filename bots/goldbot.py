@@ -476,9 +476,9 @@ class GoldBot:
             symbol = self._get_current_month_symbol()
 
             log_signal(
-                source=self.name,
-                signal_type=signal,
-                symbol=symbol,
+                self.name,  # bot_name (positional)
+                signal,  # signal_type (positional)
+                symbol,  # symbol (positional)
                 price=current_price,
                 reason=f"ST: {signal}, ADX: {current_adx:.1f}, EMA: {current_ema:.0f}"
             )
