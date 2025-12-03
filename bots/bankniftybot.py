@@ -205,35 +205,35 @@ class BankNiftyBot:
     def get_option_symbol(self, strike, option_type):
         """
         Build BANKNIFTY option symbol in Kite/NSE format.
-        Format: BANKNIFTY + YY + M + DD + STRIKE + CE/PE
-        Where M is single-letter month code and DD is 2-digit day.
+        Format: BANKNIFTY + YY + MMM + STRIKE + CE/PE
+        Where MMM is 3-letter month abbreviation (JAN, FEB, etc.)
+        Example: BANKNIFTY25DEC58800PE
         """
         expiry_date = self.get_weekly_expiry()
         if not expiry_date:
             self.logger.error("Could not determine expiry date")
             return None
 
-        # NSE month codes for weekly options
+        # NSE uses 3-letter month abbreviations (updated format)
         month_codes = {
-            1: 'J',   # January
-            2: 'F',   # February
-            3: 'M',   # March
-            4: 'A',   # April
-            5: 'Y',   # May
-            6: 'N',   # June
-            7: 'L',   # July
-            8: 'G',   # August
-            9: 'S',   # September
-            10: 'O',  # October
-            11: 'V',  # November
-            12: 'D'   # December
+            1: 'JAN',   # January
+            2: 'FEB',   # February
+            3: 'MAR',   # March
+            4: 'APR',   # April
+            5: 'MAY',   # May
+            6: 'JUN',   # June
+            7: 'JUL',   # July
+            8: 'AUG',   # August
+            9: 'SEP',   # September
+            10: 'OCT',  # October
+            11: 'NOV',  # November
+            12: 'DEC'   # December
         }
 
         year = expiry_date.strftime("%y")
         month_code = month_codes[expiry_date.month]
-        day = expiry_date.strftime("%d")
 
-        return f"BANKNIFTY{year}{month_code}{day}{int(strike)}{option_type}"
+        return f"BANKNIFTY{year}{month_code}{int(strike)}{option_type}"
 
     def calculate_lots(self, premium):
         """
