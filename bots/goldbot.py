@@ -233,18 +233,20 @@ class GoldBot:
             from_date = datetime.datetime.now() - datetime.timedelta(days=2)
             to_date = datetime.datetime.now()
 
-            # Use instrument token for data fetch (more reliable than symbol)
-            df = self.executor.get_historical_data(
+            # Get historical data (returns list of candles)
+            data = self.executor.get_historical_data(
                 instrument_token=self._instrument_token,
                 from_date=from_date,
                 to_date=to_date,
                 interval=GOLD_TIMEFRAME
             )
 
-            if df is None or len(df) < 50:
+            if not data or len(data) < 50:
                 self.logger.debug(f"Insufficient data for {symbol}")
                 return None
 
+            # Convert to DataFrame
+            df = pd.DataFrame(data)
             return df
 
         except Exception as e:
