@@ -97,6 +97,7 @@ class GoldBot:
         self._mcx_instruments = None
         self._instruments_loaded = False
         self._current_contract_symbol = None
+        self._instrument_token = None  # Token for current contract
 
         self.logger.info(f"{self.name} initialized for MCX Gold Mini futures")
 
@@ -111,6 +112,7 @@ class GoldBot:
         self._mcx_instruments = None
         self._instruments_loaded = False
         self._current_contract_symbol = None
+        self._instrument_token = None
         self.logger.info("Daily state reset")
 
     def _load_mcx_instruments(self):
@@ -129,54 +131,90 @@ class GoldBot:
 
     def _get_current_month_symbol(self):
         """
-        Get current month Gold futures symbol.
+        Get current month Gold futures symbol by querying MCX instruments.
 
-        ASSUMPTION: Symbol format is GOLDMYYMMM (e.g., GOLDM25DEC)
-        This needs verification with actual Zerodha MCX symbols.
+        NO ASSUMPTIONS: Queries actual instrument list from exchange,
+        finds Gold Mini contract with nearest expiry.
 
-        Returns current month contract symbol.
+        Returns current month contract symbol or None if not found.
         """
         if self._current_contract_symbol:
             return self._current_contract_symbol
 
         try:
-            # Get current date
-            now = datetime.datetime.now()
+            # Load MCX instruments
+            instruments = self._load_mcx_instruments()
+            if not instruments:
+                self.logger.error("Cannot load MCX instruments")
+                return None
 
-            # Gold futures expire on 5th of every month
-            # If today is after 5th, use next month contract
-            if now.day >= 5:
-                # Move to next month
-                if now.month == 12:
-                    expiry_month = 1
-                    expiry_year = now.year + 1
-                else:
-                    expiry_month = now.month + 1
-                    expiry_year = now.year
-            else:
-                expiry_month = now.month
-                expiry_year = now.year
+            # Filter for Gold Mini contracts (100 grams)
+            # Look for contracts with 'GOLDM' in name and lot_size = 100
+            gold_contracts = []
+            for inst in instruments:
+                symbol = inst.get('tradingsymbol', '')
+                name = inst.get('name', '')
+                lot_size = inst.get('lot_size', 0)
 
-            # Build symbol: GOLDMYYMMM (e.g., GOLDM25DEC)
-            month_codes = {
-                1: 'JAN', 2: 'FEB', 3: 'MAR', 4: 'APR',
-                5: 'MAY', 6: 'JUN', 7: 'JUL', 8: 'AUG',
-                9: 'SEP', 10: 'OCT', 11: 'NOV', 12: 'DEC'
-            }
+                # Match Gold Mini: symbol contains GOLDM or name contains "Gold Mini"
+                # and lot_size = 100 grams
+                if (('GOLDM' in symbol or 'Gold Mini' in name) and
+                    lot_size == 100 and
+                    inst.get('instrument_type') == 'FUT'):
+                    gold_contracts.append(inst)
 
-            year_code = str(expiry_year)[2:]  # Last 2 digits
-            month_code = month_codes[expiry_month]
+            if not gold_contracts:
+                self.logger.error("No Gold Mini futures found in MCX instruments")
+                self.logger.info("Available instruments sample: " +
+                               str([i['tradingsymbol'] for i in instruments[:5]]))
+                return None
 
-            # ASSUMPTION: Format is GOLDMYYMMM (needs verification)
-            symbol = f"{GOLD_SYMBOL}{year_code}{month_code}"
+            # Find contract with nearest expiry date after today
+            now = datetime.datetime.now().date()
+            valid_contracts = []
+
+            for contract in gold_contracts:
+                expiry = contract.get('expiry')
+                if expiry:
+                    # expiry might be datetime or string
+                    if isinstance(expiry, str):
+                        expiry_date = datetime.datetime.strptime(expiry, '%Y-%m-%d').date()
+                    else:
+                        expiry_date = expiry.date() if hasattr(expiry, 'date') else expiry
+
+                    # Only consider contracts expiring in the future
+                    if expiry_date >= now:
+                        valid_contracts.append({
+                            'symbol': contract['tradingsymbol'],
+                            'expiry': expiry_date,
+                            'instrument_token': contract.get('instrument_token')
+                        })
+
+            if not valid_contracts:
+                self.logger.error("No valid Gold Mini contracts with future expiry found")
+                return None
+
+            # Sort by expiry date and pick the nearest one (current month)
+            valid_contracts.sort(key=lambda x: x['expiry'])
+            current_contract = valid_contracts[0]
+
+            symbol = current_contract['symbol']
+            expiry = current_contract['expiry']
 
             self._current_contract_symbol = symbol
-            self.logger.info(f"Trading Gold contract: {symbol}")
+            self._instrument_token = current_contract['instrument_token']
+
+            self.logger.info(
+                f"Trading Gold contract: {symbol} "
+                f"(Expiry: {expiry.strftime('%Y-%m-%d')}, Token: {self._instrument_token})"
+            )
 
             return symbol
 
         except Exception as e:
             self.logger.error(f"Failed to determine Gold contract symbol: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return None
 
     def fetch_data(self):
@@ -186,17 +224,18 @@ class GoldBot:
         Returns DataFrame with OHLCV data.
         """
         try:
+            # Get current contract (this sets both symbol and token)
             symbol = self._get_current_month_symbol()
-            if not symbol:
+            if not symbol or not self._instrument_token:
                 return None
 
             # Fetch 15-min data (100 candles = ~25 hours of data)
             from_date = datetime.datetime.now() - datetime.timedelta(days=2)
             to_date = datetime.datetime.now()
 
-            # CRITICAL: Verify this works with MCX and returns 15-min data
+            # Use instrument token for data fetch (more reliable than symbol)
             df = self.executor.get_historical_data(
-                instrument_token=symbol,  # Might need token, not symbol
+                instrument_token=self._instrument_token,
                 from_date=from_date,
                 to_date=to_date,
                 interval=GOLD_TIMEFRAME,
