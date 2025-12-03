@@ -433,7 +433,7 @@ class GoldBot:
             df = adx(df)
             df['ema20'] = ema(df['close'], GOLD_EMA_PERIOD)
 
-            current_adx = df['adx'].iloc[-1]
+            current_adx = df['ADX'].iloc[-1]  # Uppercase ADX
             current_ema = df['ema20'].iloc[-1]
 
             st_bullish = is_supertrend_bullish(df)
