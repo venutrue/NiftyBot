@@ -130,24 +130,59 @@ def get_bots_to_run(bot_arg):
 
     return bots
 
-def is_market_open():
-    """Check if market is currently open."""
+def is_market_open(bots=None):
+    """
+    Check if market is currently open.
+
+    For commodity bots (GoldBot): 9:00 AM - 11:30 PM (MCX hours)
+    For equity bots (NiftyBot, etc.): 9:15 AM - 3:30 PM (NSE hours)
+    """
     now = datetime.datetime.now()
-    market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
-    market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0)
+
+    # Check if any commodity bots are in the list
+    has_commodity_bot = False
+    if bots:
+        from bots.goldbot import GoldBot
+        has_commodity_bot = any(isinstance(bot, GoldBot) for bot in bots)
+
+    if has_commodity_bot:
+        # MCX commodity hours: 9:00 AM - 11:30 PM
+        market_open = now.replace(hour=9, minute=0, second=0)
+        market_close = now.replace(hour=23, minute=30, second=0)
+    else:
+        # NSE equity hours
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
+        market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0)
+
     return market_open <= now <= market_close
 
-def wait_for_market_open():
-    """Wait until market opens."""
-    while not is_market_open() and running:
+def wait_for_market_open(bots=None):
+    """
+    Wait until market opens.
+
+    Uses appropriate market hours based on bot types.
+    """
+    # Check if any commodity bots are in the list
+    has_commodity_bot = False
+    if bots:
+        from bots.goldbot import GoldBot
+        has_commodity_bot = any(isinstance(bot, GoldBot) for bot in bots)
+
+    while not is_market_open(bots) and running:
         now = datetime.datetime.now()
-        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
+
+        if has_commodity_bot:
+            market_open = now.replace(hour=9, minute=0, second=0)
+            market_type = "MCX"
+        else:
+            market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
+            market_type = "NSE"
 
         if now < market_open:
             wait_seconds = (market_open - now).total_seconds()
-            logger.info(f"Market opens in {wait_seconds/60:.0f} minutes. Waiting...")
+            logger.info(f"{market_type} market opens in {wait_seconds/60:.0f} minutes. Waiting...")
         else:
-            logger.info("Market closed for today.")
+            logger.info(f"{market_type} market closed for today.")
             return False
 
         # Sleep for a bit then check again
@@ -213,7 +248,7 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
 
     while running:
         # Check market hours
-        if not is_market_open():
+        if not is_market_open(bots):
             logger.info("Market closed. Stopping bots.")
             break
 
@@ -316,9 +351,9 @@ def main():
         sys.exit(0)
 
     # Wait for market open
-    if not is_market_open():
+    if not is_market_open(bots):
         logger.info("Market not open yet...")
-        if not wait_for_market_open():
+        if not wait_for_market_open(bots):
             logger.info("Exiting - market closed for today")
             sys.exit(0)
 
