@@ -48,7 +48,7 @@ class PaperTradeExecutor:
 
     def execute(self, signal: dict) -> Optional[str]:
         """
-        Execute a paper trade.
+        Execute a paper trade (handles both BUY and SELL signals).
 
         Args:
             signal: Trading signal from bot
@@ -57,10 +57,17 @@ class PaperTradeExecutor:
             Paper order ID if successful
         """
         try:
-            # Get current market price
             symbol = signal['symbol']
-            exchange = signal.get('exchange', EXCHANGE_NFO)
+            action = signal['action']
 
+            # Check if this is an exit signal (SELL)
+            if action == 'SELL':
+                # Handle position exit
+                reason = signal.get('reason', 'Signal generated')
+                return self.exit_position(symbol, reason)
+
+            # Handle new position entry (BUY)
+            exchange = signal.get('exchange', EXCHANGE_NFO)
             current_price = self.get_ltp(symbol, exchange)
             if not current_price:
                 self.logger.error(f"Could not get price for {symbol}")
