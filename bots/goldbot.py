@@ -238,8 +238,7 @@ class GoldBot:
                 instrument_token=self._instrument_token,
                 from_date=from_date,
                 to_date=to_date,
-                interval=GOLD_TIMEFRAME,
-                exchange=EXCHANGE_MCX
+                interval=GOLD_TIMEFRAME
             )
 
             if df is None or len(df) < 50:
