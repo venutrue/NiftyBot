@@ -172,10 +172,35 @@ class PaperTradeExecutor:
         }
 
     def get_order_history(self, order_id):
-        """Get order history (simulated complete status)."""
+        """Get order history (simulated complete status with actual fill price)."""
+        # For paper trading, we need to return the actual fill price
+        # Check if this is an open position or recent trade
+        for symbol, position in self.positions.items():
+            if position.get('order_id') == order_id:
+                return {
+                    'status': 'COMPLETE',
+                    'average_price': position['entry_price']
+                }
+
+        # Check recent closed trades in paper engine
+        for trade in reversed(list(self.paper_engine.closed_trades)):
+            if trade.order_id == order_id:
+                # Return exit price if it was an exit, entry price if it was an entry
+                if trade.exit_price:
+                    return {
+                        'status': 'COMPLETE',
+                        'average_price': trade.exit_price
+                    }
+                else:
+                    return {
+                        'status': 'COMPLETE',
+                        'average_price': trade.entry_price
+                    }
+
+        # Fallback
         return {
             'status': 'COMPLETE',
-            'average_price': 0  # Will be fetched from position
+            'average_price': 0
         }
 
     def update_daily_pnl(self, pnl: float):
