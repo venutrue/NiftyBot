@@ -24,6 +24,7 @@ from executor.paper_executor import PaperTradeExecutor
 from bots.niftybot import NiftyBot
 from bots.bankniftybot import BankNiftyBot
 from bots.stockbot import StockBot
+from bots.goldbot import GoldBot
 
 ##############################################
 # GLOBAL STATE
@@ -54,6 +55,7 @@ AVAILABLE_BOTS = {
     'nifty': NiftyBot,
     'banknifty': BankNiftyBot,
     'stock': StockBot,
+    'gold': GoldBot,
 }
 
 ##############################################
@@ -70,7 +72,9 @@ Examples:
   python run.py                    # Run all bots
   python run.py --bot nifty        # Run only NiftyBot
   python run.py --bot stock        # Run only StockBot
+  python run.py --bot gold         # Run only GoldBot (MCX)
   python run.py --bot nifty,stock  # Run specific bots
+  python run.py --paper --bot gold # Paper trade Gold futures
   python run.py --dry-run          # Signals only, no trades
   python run.py --status           # Show system status
         """
@@ -80,7 +84,7 @@ Examples:
         '--bot',
         type=str,
         default='all',
-        help='Bot(s) to run: all, nifty, stock, or comma-separated list'
+        help='Bot(s) to run: all, nifty, banknifty, stock, gold, or comma-separated list'
     )
 
     parser.add_argument(
