@@ -232,7 +232,14 @@ class NiftyBot:
         year = expiry_date.strftime("%y")
         month_code = month_codes[expiry_date.month]
 
-        return f"NIFTY{year}{month_code}{int(strike)}{option_type}"
+        symbol = f"NIFTY{year}{month_code}{int(strike)}{option_type}"
+
+        # Log expiry date for verification (only log once per session)
+        if not hasattr(self, '_expiry_logged') or not self._expiry_logged:
+            self.logger.info(f"Trading expiry: {expiry_date.strftime('%Y-%m-%d')} ({expiry_date.strftime('%A')})")
+            self._expiry_logged = True
+
+        return symbol
 
     def calculate_lots(self, premium):
         """
@@ -323,7 +330,24 @@ class NiftyBot:
             if opt_data is None or len(opt_data) < 5:
                 continue
 
-            premium = opt_data['close'].iloc[-1]
+            # Get both historical close and real-time LTP for comparison
+            historical_close = opt_data['close'].iloc[-1]
+            ltp = self.executor.get_ltp(symbol, EXCHANGE_NFO)
+
+            # Use LTP if available, otherwise fallback to historical close
+            if ltp is not None and ltp > 0:
+                premium = ltp
+                # Warn if LTP differs significantly from historical close (>10% difference)
+                price_diff_pct = abs((ltp - historical_close) / historical_close * 100) if historical_close > 0 else 0
+                if price_diff_pct > 10:
+                    self.logger.warning(
+                        f"{symbol}: LTP (₹{ltp:.2f}) differs {price_diff_pct:.1f}% from historical close (₹{historical_close:.2f})"
+                    )
+            else:
+                # Fallback to historical close if LTP unavailable
+                premium = historical_close
+                self.logger.debug(f"{symbol}: Using historical close (LTP unavailable)")
+
             vwap = opt_data['vwap'].iloc[-1]
             volume = opt_data['volume'].iloc[-1]
             avg_volume = opt_data['volume'].mean()
