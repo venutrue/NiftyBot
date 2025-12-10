@@ -352,8 +352,8 @@ class BacktestEngine:
 
             # If listing date is after to_date, option wasn't trading during this period at all
             if listing_datetime >= to_date_naive:
-                self.logger.info(
-                    f"{symbol}: SKIPPED - not yet listed (listing {listing_datetime.date()} >= query end {to_date_naive.date()})"
+                self.logger.error(
+                    f"DEBUG: {symbol}: SKIPPED - not yet listed (listing {listing_datetime.date()} >= query end {to_date_naive.date()})"
                 )
                 return None
 
@@ -376,8 +376,8 @@ class BacktestEngine:
 
         try:
             # DEBUG: Log the actual dates being sent to API
-            self.logger.info(
-                f"{symbol}: Fetching from {from_date} to {to_date} "
+            self.logger.error(
+                f"DEBUG: {symbol}: Fetching from {from_date} to {to_date} "
                 f"(listing: {listing_date if listing_date else 'N/A'})"
             )
 
