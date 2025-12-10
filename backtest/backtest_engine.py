@@ -335,13 +335,25 @@ class BacktestEngine:
                 listing_datetime = listing_date
 
             # Strip timezone info from from_date and to_date for comparison (if present)
-            from_date_naive = from_date.replace(tzinfo=None) if hasattr(from_date, 'tzinfo') and from_date.tzinfo else from_date
-            to_date_naive = to_date.replace(tzinfo=None) if hasattr(to_date, 'tzinfo') and to_date.tzinfo else to_date
+            # Also convert pandas Timestamp to datetime if needed
+            if hasattr(from_date, 'to_pydatetime'):
+                from_date_naive = from_date.to_pydatetime().replace(tzinfo=None)
+            elif hasattr(from_date, 'tzinfo') and from_date.tzinfo:
+                from_date_naive = from_date.replace(tzinfo=None)
+            else:
+                from_date_naive = from_date
+
+            if hasattr(to_date, 'to_pydatetime'):
+                to_date_naive = to_date.to_pydatetime().replace(tzinfo=None)
+            elif hasattr(to_date, 'tzinfo') and to_date.tzinfo:
+                to_date_naive = to_date.replace(tzinfo=None)
+            else:
+                to_date_naive = to_date
 
             # If listing date is after to_date, option wasn't trading during this period at all
             if listing_datetime >= to_date_naive:
-                self.logger.debug(
-                    f"{symbol}: Option not yet listed (listing {listing_datetime} >= to_date {to_date_naive})"
+                self.logger.info(
+                    f"{symbol}: SKIPPED - not yet listed (listing {listing_datetime.date()} >= query end {to_date_naive.date()})"
                 )
                 return None
 
@@ -363,6 +375,12 @@ class BacktestEngine:
                     from_date = listing_datetime
 
         try:
+            # DEBUG: Log the actual dates being sent to API
+            self.logger.info(
+                f"{symbol}: Fetching from {from_date} to {to_date} "
+                f"(listing: {listing_date if listing_date else 'N/A'})"
+            )
+
             data = self.executor.get_historical_data(
                 instrument_token=token,
                 from_date=from_date,
