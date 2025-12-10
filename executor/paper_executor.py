@@ -191,6 +191,18 @@ class PaperTradeExecutor:
     def get_order_history(self, order_id):
         """Get order history (simulated complete status with actual fill price)."""
         # For paper trading, we need to return the actual fill price
+
+        # Check if this is an exit order ID (format: EXIT_{symbol})
+        if order_id and order_id.startswith('EXIT_'):
+            symbol = order_id[5:]  # Remove 'EXIT_' prefix
+            # Find the most recent closed trade for this symbol
+            for trade in reversed(list(self.paper_engine.closed_trades)):
+                if trade.symbol == symbol and trade.exit_price is not None:
+                    return {
+                        'status': 'COMPLETE',
+                        'average_price': trade.exit_price
+                    }
+
         # Check if this is an open position or recent trade
         for symbol, position in self.positions.items():
             if position.get('order_id') == order_id:
