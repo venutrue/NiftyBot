@@ -198,30 +198,21 @@ class BacktestEngine:
 
     def _get_option_token(self, symbol):
         """
-        Get instrument token and metadata for an option symbol.
+        Get instrument token for an option symbol.
 
         Returns:
-            Tuple of (token, listing_date) or (None, None) if not found
+            instrument_token or None if not found
         """
         instruments = self._load_nfo_instruments()
         if instruments is None:
-            return None, None
+            return None
 
         for inst in instruments:
             if inst['tradingsymbol'] == symbol:
-                token = inst['instrument_token']
-                # Get listing date (when option started trading)
-                # NSE lists weekly options on previous Thursday (4 days before expiry for Tuesday expiry)
-                # For safety, use expiry - 7 days as earliest possible data
-                expiry = inst.get('expiry')
-                if expiry:
-                    listing_date = expiry - datetime.timedelta(days=7)
-                else:
-                    listing_date = None
-                return token, listing_date
+                return inst['instrument_token']
 
         self.logger.warning(f"Symbol '{symbol}' not found in NFO instruments")
-        return None, None
+        return None
 
     def _get_weekly_expiry(self, reference_date):
         """
@@ -320,67 +311,13 @@ class BacktestEngine:
             self.logger.debug(f"Using cached data for {symbol}")
             return self._option_data_cache[cache_key]
 
-        # Get token and listing date for this option
-        token, listing_date = self._get_option_token(symbol)
+        # Get token for this option
+        token = self._get_option_token(symbol)
         if token is None:
             self.logger.debug(f"Could not find token for {symbol}")
             return None
 
-        # CRITICAL: Ensure we don't fetch data from before option started trading
-        if listing_date:
-            # Convert to datetime for comparison
-            if isinstance(listing_date, datetime.date):
-                listing_datetime = datetime.datetime.combine(listing_date, datetime.time(9, 15))
-            else:
-                listing_datetime = listing_date
-
-            # Strip timezone info from from_date and to_date for comparison (if present)
-            # Also convert pandas Timestamp to datetime if needed
-            if hasattr(from_date, 'to_pydatetime'):
-                from_date_naive = from_date.to_pydatetime().replace(tzinfo=None)
-            elif hasattr(from_date, 'tzinfo') and from_date.tzinfo:
-                from_date_naive = from_date.replace(tzinfo=None)
-            else:
-                from_date_naive = from_date
-
-            if hasattr(to_date, 'to_pydatetime'):
-                to_date_naive = to_date.to_pydatetime().replace(tzinfo=None)
-            elif hasattr(to_date, 'tzinfo') and to_date.tzinfo:
-                to_date_naive = to_date.replace(tzinfo=None)
-            else:
-                to_date_naive = to_date
-
-            # If listing date is after to_date, option wasn't trading during this period at all
-            if listing_datetime >= to_date_naive:
-                self.logger.info(
-                    f"{symbol}: SKIPPED - not yet listed (listing {listing_datetime.date()} >= query end {to_date_naive.date()})"
-                )
-                return None
-
-            # If from_date is before listing, adjust it
-            if from_date_naive < listing_datetime:
-                self.logger.debug(
-                    f"{symbol}: Adjusting from_date from {from_date_naive} to listing date {listing_datetime}"
-                )
-                # Create new from_date preserving original timezone if it had one
-                if hasattr(from_date, 'tzinfo') and from_date.tzinfo:
-                    from_date = from_date.replace(
-                        year=listing_datetime.year,
-                        month=listing_datetime.month,
-                        day=listing_datetime.day,
-                        hour=listing_datetime.hour,
-                        minute=listing_datetime.minute
-                    )
-                else:
-                    from_date = listing_datetime
-
         try:
-            # DEBUG: Log the actual dates being sent to API
-            self.logger.info(
-                f"{symbol}: Fetching from {from_date} to {to_date} "
-                f"(listing: {listing_date if listing_date else 'N/A'})"
-            )
-
             data = self.executor.get_historical_data(
                 instrument_token=token,
                 from_date=from_date,
@@ -397,10 +334,23 @@ class BacktestEngine:
 
                 return df
             else:
-                self.logger.debug(f"{symbol}: No data returned for period {from_date} to {to_date}")
+                # No data available for this period (option might not have been trading yet)
+                self.logger.debug(
+                    f"{symbol}: No data for {from_date.date()} to {to_date.date()} "
+                    f"(option may not have started trading yet)"
+                )
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch option data for {symbol}: {str(e)}")
+            # Silently skip if data not available - this is expected for new options
+            error_msg = str(e).lower()
+            if 'invalid from date' in error_msg or 'invalid date' in error_msg:
+                self.logger.debug(
+                    f"{symbol}: Data not available for {from_date.date()} "
+                    f"(option may not have been listed yet)"
+                )
+            else:
+                # Log other errors
+                self.logger.error(f"Failed to fetch option data for {symbol}: {str(e)}")
 
         return None
 
