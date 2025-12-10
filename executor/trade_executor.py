@@ -86,6 +86,12 @@ class KiteExecutor(BrokerInterface):
         self.logger = setup_logger("EXECUTOR")
         self.connected = False
 
+        # API rate limiting (max 50 calls per day)
+        self.max_api_calls_per_day = 50
+        self.api_call_count = 0
+        self.api_call_date = datetime.date.today()
+        self.api_limit_reached = False
+
     def connect(self):
         """Connect to Kite Connect API."""
         try:
@@ -99,9 +105,58 @@ class KiteExecutor(BrokerInterface):
             self.connected = False
             return False
 
+    def _check_api_rate_limit(self):
+        """
+        Check if API rate limit has been reached.
+
+        Returns:
+            bool: True if within limit, False if limit reached
+        """
+        today = datetime.date.today()
+
+        # Reset counter if new day
+        if today != self.api_call_date:
+            self.api_call_count = 0
+            self.api_call_date = today
+            self.api_limit_reached = False
+            self.logger.info(f"API rate limit reset for new day: {today}")
+
+        # Check if limit reached
+        if self.api_call_count >= self.max_api_calls_per_day:
+            if not self.api_limit_reached:
+                # Log warning only once per day
+                log_error("EXECUTOR",
+                    f"🚨 API RATE LIMIT REACHED: {self.api_call_count}/{self.max_api_calls_per_day} calls today. "
+                    f"No more API calls until tomorrow to prevent issues."
+                )
+                self.api_limit_reached = True
+            return False
+
+        return True
+
+    def _increment_api_call_count(self, call_name: str):
+        """Increment API call counter and log if approaching limit."""
+        self.api_call_count += 1
+
+        # Log progress every 10 calls
+        if self.api_call_count % 10 == 0:
+            remaining = self.max_api_calls_per_day - self.api_call_count
+            self.logger.info(
+                f"API calls today: {self.api_call_count}/{self.max_api_calls_per_day} "
+                f"({remaining} remaining)"
+            )
+
+        # Warn when approaching limit
+        if self.api_call_count >= self.max_api_calls_per_day - 5:
+            self.logger.warning(
+                f"⚠️  Approaching API limit: {self.api_call_count}/{self.max_api_calls_per_day} "
+                f"({self.max_api_calls_per_day - self.api_call_count} calls remaining)"
+            )
+
     def _retry_api_call(self, func, func_name, *args, **kwargs):
         """
         Retry an API call with exponential backoff on network errors.
+        Includes rate limiting check.
 
         Args:
             func: The API function to call
@@ -111,6 +166,14 @@ class KiteExecutor(BrokerInterface):
         Returns:
             Result of the API call, or None if all retries fail
         """
+        # SAFETY: Check API rate limit before making call
+        if not self._check_api_rate_limit():
+            self.logger.error(
+                f"{func_name}: BLOCKED - API rate limit reached "
+                f"({self.api_call_count}/{self.max_api_calls_per_day} calls today)"
+            )
+            return None
+
         last_error = None
         delay = API_RETRY_DELAY
 
@@ -119,7 +182,11 @@ class KiteExecutor(BrokerInterface):
                 self.logger.debug(f"{func_name}: Attempt {attempt}/{API_MAX_RETRIES}")
                 result = func(*args, **kwargs)
 
-                # Success - log if we had retries
+                # Success - increment counter and log if we had retries
+                if attempt == 1:
+                    # Only count successful first attempts (not retries)
+                    self._increment_api_call_count(func_name)
+
                 if attempt > 1:
                     self.logger.info(f"{func_name}: Succeeded on attempt {attempt}")
 
@@ -414,6 +481,28 @@ class KiteExecutor(BrokerInterface):
         except Exception as e:
             log_error("EXECUTOR", f"Failed to get order history: {str(e)}")
             return None
+
+    def get_api_usage_stats(self):
+        """
+        Get current API usage statistics.
+
+        Returns:
+            dict with API call count, limit, and remaining calls
+        """
+        # Ensure counter is up to date for current day
+        self._check_api_rate_limit()
+
+        remaining = max(0, self.max_api_calls_per_day - self.api_call_count)
+        usage_percent = (self.api_call_count / self.max_api_calls_per_day) * 100
+
+        return {
+            'date': self.api_call_date.isoformat(),
+            'calls_made': self.api_call_count,
+            'calls_limit': self.max_api_calls_per_day,
+            'calls_remaining': remaining,
+            'usage_percent': usage_percent,
+            'limit_reached': self.api_limit_reached
+        }
 
 ##############################################
 # TRADE EXECUTOR (Main Class)

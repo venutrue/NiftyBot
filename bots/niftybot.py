@@ -290,8 +290,27 @@ class NiftyBot:
             premium: Option premium price
 
         Returns:
-            Number of lots to trade
+            Number of lots to trade, or None if premium is invalid
         """
+        # SAFETY: Validate premium is in reasonable range
+        # ATM NIFTY options typically trade between Rs. 20 - Rs. 2000
+        MIN_REASONABLE_PREMIUM = 20.0
+        MAX_REASONABLE_PREMIUM = 2000.0
+
+        if premium < MIN_REASONABLE_PREMIUM:
+            self.logger.error(
+                f"REJECTED: Premium too low (₹{premium:.2f} < ₹{MIN_REASONABLE_PREMIUM}) - "
+                f"Option may be worthless or data error"
+            )
+            return None
+
+        if premium > MAX_REASONABLE_PREMIUM:
+            self.logger.error(
+                f"REJECTED: Premium too high (₹{premium:.2f} > ₹{MAX_REASONABLE_PREMIUM}) - "
+                f"Option may be deep ITM or data error"
+            )
+            return None
+
         lot_value = premium * NIFTY_LOT_SIZE
 
         # Calculate lots based on max investment
@@ -304,6 +323,24 @@ class NiftyBot:
 
         # Cap at reasonable number (15 lots max)
         lots = min(lots, 15)
+
+        # SAFETY: Validate calculated position size is reasonable
+        total_investment = lots * lot_value
+        if total_investment < MIN_INVESTMENT_PER_TRADE * 0.5:
+            self.logger.warning(
+                f"Position size very small: ₹{total_investment:,.0f} "
+                f"(Premium: ₹{premium:.2f}, Lots: {lots})"
+            )
+        elif total_investment > MAX_INVESTMENT_PER_TRADE * 1.1:
+            self.logger.error(
+                f"REJECTED: Position size too large: ₹{total_investment:,.0f} > "
+                f"₹{MAX_INVESTMENT_PER_TRADE:,.0f}"
+            )
+            return None
+
+        self.logger.info(
+            f"Position size: {lots} lots × ₹{premium:.2f} = ₹{total_investment:,.0f}"
+        )
 
         return lots
 
@@ -813,8 +850,12 @@ class NiftyBot:
             )
             premium = premium_confirm  # Use latest
 
-        # Calculate lots based on capital
+        # Calculate lots based on capital (with premium validation)
         lots = self.calculate_lots(premium)
+        if lots is None:
+            self.logger.error(f"Position sizing rejected for {symbol} (premium: ₹{premium:.2f})")
+            return None
+
         quantity = lots * NIFTY_LOT_SIZE
 
         # Calculate initial stop loss (20% of premium)
