@@ -151,7 +151,7 @@ class NiftyBot:
         Fetch option historical data and compute VWAP.
 
         Args:
-            symbol: Option trading symbol (e.g., NIFTY24DEC26200CE)
+            symbol: Option trading symbol (e.g., NIFTY25D1626200CE - Dec 16, 2025)
 
         Returns:
             DataFrame with option OHLCV and VWAP, or None if failed
@@ -237,40 +237,47 @@ class NiftyBot:
 
     def get_option_symbol(self, strike, option_type):
         """
-        Build NIFTY option symbol in Kite/NSE format.
-        Format: NIFTY + YY + MMM + STRIKE + CE/PE
-        Where MMM is 3-letter month abbreviation (JAN, FEB, etc.)
-        Example: NIFTY25DEC24500CE
+        Build NIFTY option symbol in Kite/NSE format for WEEKLY options.
+
+        Weekly format: NIFTY + YY + M + DD + STRIKE + CE/PE
+        Where M is single character: 1-9 for Jan-Sep, O for Oct, N for Nov, D for Dec
+
+        Example: NIFTY25D1625800CE = NIFTY Dec 16, 2025, 25800 CE
+
+        Note: Monthly options use format NIFTY25DEC25800CE (no day), but we trade weeklies.
         """
         expiry_date = self.get_weekly_expiry()
         if not expiry_date:
             self.logger.error("Could not determine expiry date")
             return None
 
-        # NSE uses 3-letter month abbreviations (updated format)
+        # NSE weekly options use single-character month codes
         month_codes = {
-            1: 'JAN',   # January
-            2: 'FEB',   # February
-            3: 'MAR',   # March
-            4: 'APR',   # April
-            5: 'MAY',   # May
-            6: 'JUN',   # June
-            7: 'JUL',   # July
-            8: 'AUG',   # August
-            9: 'SEP',   # September
-            10: 'OCT',  # October
-            11: 'NOV',  # November
-            12: 'DEC'   # December
+            1: '1',   # January
+            2: '2',   # February
+            3: '3',   # March
+            4: '4',   # April
+            5: '5',   # May
+            6: '6',   # June
+            7: '7',   # July
+            8: '8',   # August
+            9: '9',   # September
+            10: 'O',  # October (capital O)
+            11: 'N',  # November
+            12: 'D'   # December
         }
 
         year = expiry_date.strftime("%y")
         month_code = month_codes[expiry_date.month]
+        day = expiry_date.strftime("%d")  # Two-digit day (01-31)
 
-        symbol = f"NIFTY{year}{month_code}{int(strike)}{option_type}"
+        # Weekly format includes day: NIFTY + YY + M + DD + STRIKE + CE/PE
+        symbol = f"NIFTY{year}{month_code}{day}{int(strike)}{option_type}"
 
         # Log expiry date for verification (only log once per session)
         if not hasattr(self, '_expiry_logged') or not self._expiry_logged:
             self.logger.info(f"Trading expiry: {expiry_date.strftime('%Y-%m-%d')} ({expiry_date.strftime('%A')})")
+            self.logger.info(f"Option symbol format: NIFTY{year}{month_code}{day}XXXXX{option_type} (weekly)")
             self._expiry_logged = True
 
         return symbol
