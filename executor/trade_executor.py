@@ -284,7 +284,7 @@ class KiteExecutor(BrokerInterface):
 
     def get_ltp(self, symbol, exchange=EXCHANGE_NSE):
         """
-        Get last traded price with retry logic.
+        Get last traded price with retry logic and enhanced logging.
 
         Args:
             symbol: Trading symbol
@@ -294,11 +294,10 @@ class KiteExecutor(BrokerInterface):
             Last traded price, or None if failed
         """
         if not self.connected:
-            self.logger.debug("get_ltp: Not connected to broker")
+            self.logger.warning("get_ltp: Not connected to broker")  # Changed from debug to warning
             return None
 
         instrument = f"{exchange}:{symbol}"
-        self.logger.debug(f"get_ltp: Fetching LTP for {instrument}")
 
         # Use retry wrapper
         ltp_data = self._retry_api_call(
@@ -309,10 +308,10 @@ class KiteExecutor(BrokerInterface):
 
         if ltp_data and instrument in ltp_data:
             ltp = ltp_data[instrument]['last_price']
-            self.logger.debug(f"get_ltp: {instrument} = {ltp}")
+            self.logger.info(f"get_ltp: {instrument} = ₹{ltp:.2f}")  # Changed to INFO level
             return ltp
         else:
-            self.logger.warning(f"get_ltp: No data for {instrument}")
+            self.logger.error(f"get_ltp: No data for {instrument}")  # Changed to ERROR level
             return None
 
     def get_historical_data(self, instrument_token, from_date, to_date, interval="minute"):

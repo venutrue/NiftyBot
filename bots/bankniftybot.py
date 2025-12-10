@@ -5,6 +5,7 @@
 ##############################################
 
 import datetime
+import time
 import pandas as pd
 
 from common.config import (
@@ -19,6 +20,7 @@ from common.config import (
     MAX_INVESTMENT_PER_TRADE, MIN_INVESTMENT_PER_TRADE,
     MAX_LOSS_PER_DAY, MAX_CONSECUTIVE_LOSSES,
     INITIAL_SL_PERCENT, BREAKEVEN_TRIGGER_PERCENT, TRAIL_PERCENT,
+    TRAIL_FREQUENCY, TRAIL_INCREMENT, MAX_PROFIT_GIVEBACK,
     SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER,
     ADX_ENTRY_THRESHOLD, VWAP_BUFFER_PERCENT,
     TRAILING_STOP_METHOD, TRAILING_EMA_PERIOD,
@@ -702,27 +704,69 @@ class BankNiftyBot:
             if current_premium <= initial_sl:
                 exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
-            # Phase 2: Move to breakeven at +20%
-            elif profit_pct >= BREAKEVEN_TRIGGER_PERCENT and current_sl < entry_premium:
-                new_sl = entry_premium
-                self.logger.info(f"{symbol}: Moving SL to breakeven at Rs. {new_sl:.2f}")
-                position['current_sl'] = new_sl
+            # Phase 2: Dynamic progressive trailing (NEW ULTRA-AGGRESSIVE LOGIC!)
+            elif profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
 
-            # Phase 3: Trail stop loss
-            if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
-                if TRAILING_STOP_METHOD == 'supertrend':
-                    # Exit on Supertrend flip
+                if TRAILING_STOP_METHOD == 'dynamic':
+                    # Progressive trailing: Lock profits incrementally
+                    # Calculate how many trail steps we should have taken
+                    trail_steps = int((profit_pct - BREAKEVEN_TRIGGER_PERCENT) / TRAIL_FREQUENCY)
+
+                    # Calculate target SL based on trail steps
+                    # Start at breakeven (BREAKEVEN_TRIGGER_PERCENT), then add increments
+                    locked_profit_pct = BREAKEVEN_TRIGGER_PERCENT + (trail_steps * TRAIL_INCREMENT)
+                    target_sl = entry_premium * (1 + locked_profit_pct / 100)
+
+                    # Move SL up progressively
+                    if target_sl > current_sl:
+                        old_sl = current_sl
+                        new_sl = target_sl
+                        position['current_sl'] = new_sl
+
+                        locked_profit = ((new_sl - entry_premium) / entry_premium) * 100
+                        self.logger.info(
+                            f"{symbol}: Trailing SL from ₹{old_sl:.2f} → ₹{new_sl:.2f} "
+                            f"(Locked {locked_profit:.1f}% profit, Current: {profit_pct:.1f}%)"
+                        )
+
+                    # Phase 3: Max profit protection (never give back >30% of gains)
+                    max_profit_amount = max_premium - entry_premium
+                    max_giveback = max_profit_amount * (MAX_PROFIT_GIVEBACK / 100)
+                    protection_sl = max_premium - max_giveback
+
+                    if protection_sl > new_sl:
+                        old_sl = new_sl
+                        new_sl = protection_sl
+                        position['current_sl'] = new_sl
+                        self.logger.info(
+                            f"{symbol}: Max profit protection SL = ₹{new_sl:.2f} "
+                            f"(Max seen: ₹{max_premium:.2f}, protecting {100-MAX_PROFIT_GIVEBACK}% of gains)"
+                        )
+
+                elif TRAILING_STOP_METHOD == 'supertrend':
+                    # Legacy: Exit on Supertrend flip
+                    if current_sl < entry_premium:
+                        new_sl = entry_premium
+                        position['current_sl'] = new_sl
+                        self.logger.info(f"{symbol}: Moving SL to breakeven at ₹{new_sl:.2f}")
+
                     if is_call and is_supertrend_bearish(df):
                         exit_reason = "Supertrend flipped bearish"
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
+
                 elif TRAILING_STOP_METHOD == 'percent':
-                    # Trail at 50% of max profit
+                    # Legacy: Trail at 50% of max profit
+                    if current_sl < entry_premium:
+                        new_sl = entry_premium
+                        position['current_sl'] = new_sl
+                        self.logger.info(f"{symbol}: Moving SL to breakeven at ₹{new_sl:.2f}")
+
                     trail_sl = entry_premium + (max_premium - entry_premium) * (TRAIL_PERCENT / 100)
                     if trail_sl > new_sl:
                         new_sl = trail_sl
                         position['current_sl'] = new_sl
-                        self.logger.debug(f"{symbol}: Trailing SL to Rs. {new_sl:.2f}")
+                        self.logger.debug(f"{symbol}: Trailing SL to ₹{new_sl:.2f}")
 
                     if current_premium <= new_sl:
                         exit_reason = f"Trailing SL hit (Premium: {current_premium:.2f} <= SL: {new_sl:.2f})"

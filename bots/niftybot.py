@@ -5,6 +5,7 @@
 ##############################################
 
 import datetime
+import time
 import pandas as pd
 
 from common.config import (
@@ -18,6 +19,7 @@ from common.config import (
     MAX_INVESTMENT_PER_TRADE, MIN_INVESTMENT_PER_TRADE,
     MAX_LOSS_PER_DAY, MAX_CONSECUTIVE_LOSSES,
     INITIAL_SL_PERCENT, BREAKEVEN_TRIGGER_PERCENT, TRAIL_PERCENT,
+    TRAIL_FREQUENCY, TRAIL_INCREMENT, MAX_PROFIT_GIVEBACK,
     SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER,
     ADX_ENTRY_THRESHOLD, VWAP_BUFFER_PERCENT,
     TRAILING_STOP_METHOD, TRAILING_EMA_PERIOD,
@@ -159,6 +161,17 @@ class NiftyBot:
             if data and len(data) > 0:
                 df = pd.DataFrame(data)
                 df = compute_vwap(df)
+
+                # CRITICAL: Validate data freshness
+                last_candle_time = df['date'].iloc[-1]
+                data_age_seconds = (datetime.datetime.now() - last_candle_time).total_seconds()
+
+                if data_age_seconds > 300:  # 5 minutes
+                    self.logger.warning(
+                        f"{symbol}: Historical data delayed by {data_age_seconds:.0f}s "
+                        f"(last candle: {last_candle_time.strftime('%H:%M:%S')})"
+                    )
+
                 return df
 
         except Exception as e:
@@ -332,21 +345,43 @@ class NiftyBot:
 
             # Get both historical close and real-time LTP for comparison
             historical_close = opt_data['close'].iloc[-1]
+            historical_timestamp = opt_data['date'].iloc[-1]
             ltp = self.executor.get_ltp(symbol, EXCHANGE_NFO)
+
+            # CRITICAL: Check how old the historical data is
+            data_age_seconds = (datetime.datetime.now() - historical_timestamp).total_seconds()
+            if data_age_seconds > 180:  # More than 3 minutes old
+                self.logger.warning(
+                    f"{symbol}: Historical data is {data_age_seconds:.0f}s old "
+                    f"(last candle: {historical_timestamp.strftime('%H:%M:%S')})"
+                )
 
             # Use LTP if available, otherwise fallback to historical close
             if ltp is not None and ltp > 0:
                 premium = ltp
-                # Warn if LTP differs significantly from historical close (>10% difference)
+                self.logger.info(f"{symbol}: Using real-time LTP = ₹{ltp:.2f}")
+
+                # Warn if LTP differs significantly from historical close (lowered from 10% to 5%)
                 price_diff_pct = abs((ltp - historical_close) / historical_close * 100) if historical_close > 0 else 0
-                if price_diff_pct > 10:
+                if price_diff_pct > 5:
                     self.logger.warning(
-                        f"{symbol}: LTP (₹{ltp:.2f}) differs {price_diff_pct:.1f}% from historical close (₹{historical_close:.2f})"
+                        f"{symbol}: LTP (₹{ltp:.2f}) differs {price_diff_pct:.1f}% "
+                        f"from historical close (₹{historical_close:.2f})"
                     )
             else:
-                # Fallback to historical close if LTP unavailable
+                # CRITICAL: Don't use stale data for trading decisions!
+                if data_age_seconds > 180:
+                    self.logger.error(
+                        f"{symbol}: LTP unavailable and historical data too old "
+                        f"({data_age_seconds:.0f}s). Skipping this strike."
+                    )
+                    continue  # Skip this strike
+
                 premium = historical_close
-                self.logger.debug(f"{symbol}: Using historical close (LTP unavailable)")
+                self.logger.warning(
+                    f"{symbol}: LTP unavailable, using historical close = ₹{historical_close:.2f} "
+                    f"(age: {data_age_seconds:.0f}s)"
+                )
 
             vwap = opt_data['vwap'].iloc[-1]
             volume = opt_data['volume'].iloc[-1]
@@ -622,11 +657,21 @@ class NiftyBot:
         option_type = "CE" if signal_type == "BUY_CE" else "PE"
         symbol = self.get_option_symbol(atm_strike, option_type)
 
-        # Get option premium
+        # Get option premium with validation
         premium = self.get_option_premium(symbol)
         if premium is None:
             self.logger.error(f"Could not get premium for {symbol}")
             return None
+
+        # CRITICAL: Re-fetch to confirm (prevent stale data)
+        time.sleep(0.5)  # Small delay to ensure fresh data
+        premium_confirm = self.get_option_premium(symbol)
+        if premium_confirm and abs(premium_confirm - premium) / premium > 0.02:  # 2% difference
+            self.logger.warning(
+                f"{symbol}: Premium changed {premium:.2f} → {premium_confirm:.2f} "
+                f"({((premium_confirm-premium)/premium*100):.1f}%) during signal generation"
+            )
+            premium = premium_confirm  # Use latest
 
         # Calculate lots based on capital
         lots = self.calculate_lots(premium)
@@ -701,27 +746,69 @@ class NiftyBot:
             if current_premium <= initial_sl:
                 exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
-            # Phase 2: Move to breakeven at +20%
-            elif profit_pct >= BREAKEVEN_TRIGGER_PERCENT and current_sl < entry_premium:
-                new_sl = entry_premium
-                self.logger.info(f"{symbol}: Moving SL to breakeven at Rs. {new_sl:.2f}")
-                position['current_sl'] = new_sl
+            # Phase 2: Dynamic progressive trailing (NEW ULTRA-AGGRESSIVE LOGIC!)
+            elif profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
 
-            # Phase 3: Trail stop loss
-            if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
-                if TRAILING_STOP_METHOD == 'supertrend':
-                    # Exit on Supertrend flip
+                if TRAILING_STOP_METHOD == 'dynamic':
+                    # Progressive trailing: Lock profits incrementally
+                    # Calculate how many trail steps we should have taken
+                    trail_steps = int((profit_pct - BREAKEVEN_TRIGGER_PERCENT) / TRAIL_FREQUENCY)
+
+                    # Calculate target SL based on trail steps
+                    # Start at breakeven (BREAKEVEN_TRIGGER_PERCENT), then add increments
+                    locked_profit_pct = BREAKEVEN_TRIGGER_PERCENT + (trail_steps * TRAIL_INCREMENT)
+                    target_sl = entry_premium * (1 + locked_profit_pct / 100)
+
+                    # Move SL up progressively
+                    if target_sl > current_sl:
+                        old_sl = current_sl
+                        new_sl = target_sl
+                        position['current_sl'] = new_sl
+
+                        locked_profit = ((new_sl - entry_premium) / entry_premium) * 100
+                        self.logger.info(
+                            f"{symbol}: Trailing SL from ₹{old_sl:.2f} → ₹{new_sl:.2f} "
+                            f"(Locked {locked_profit:.1f}% profit, Current: {profit_pct:.1f}%)"
+                        )
+
+                    # Phase 3: Max profit protection (never give back >30% of gains)
+                    max_profit_amount = max_premium - entry_premium
+                    max_giveback = max_profit_amount * (MAX_PROFIT_GIVEBACK / 100)
+                    protection_sl = max_premium - max_giveback
+
+                    if protection_sl > new_sl:
+                        old_sl = new_sl
+                        new_sl = protection_sl
+                        position['current_sl'] = new_sl
+                        self.logger.info(
+                            f"{symbol}: Max profit protection SL = ₹{new_sl:.2f} "
+                            f"(Max seen: ₹{max_premium:.2f}, protecting {100-MAX_PROFIT_GIVEBACK}% of gains)"
+                        )
+
+                elif TRAILING_STOP_METHOD == 'supertrend':
+                    # Legacy: Exit on Supertrend flip
+                    if current_sl < entry_premium:
+                        new_sl = entry_premium
+                        position['current_sl'] = new_sl
+                        self.logger.info(f"{symbol}: Moving SL to breakeven at ₹{new_sl:.2f}")
+
                     if is_call and is_supertrend_bearish(df):
                         exit_reason = "Supertrend flipped bearish"
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
+
                 elif TRAILING_STOP_METHOD == 'percent':
-                    # Trail at 50% of max profit
+                    # Legacy: Trail at 50% of max profit
+                    if current_sl < entry_premium:
+                        new_sl = entry_premium
+                        position['current_sl'] = new_sl
+                        self.logger.info(f"{symbol}: Moving SL to breakeven at ₹{new_sl:.2f}")
+
                     trail_sl = entry_premium + (max_premium - entry_premium) * (TRAIL_PERCENT / 100)
                     if trail_sl > new_sl:
                         new_sl = trail_sl
                         position['current_sl'] = new_sl
-                        self.logger.debug(f"{symbol}: Trailing SL to Rs. {new_sl:.2f}")
+                        self.logger.debug(f"{symbol}: Trailing SL to ₹{new_sl:.2f}")
 
                     if current_premium <= new_sl:
                         exit_reason = f"Trailing SL hit (Premium: {current_premium:.2f} <= SL: {new_sl:.2f})"
