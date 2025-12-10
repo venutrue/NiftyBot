@@ -479,12 +479,15 @@ class BacktestEngine:
 
             # FIX: Check if volume data is valid (indices have zero/invalid volume)
             total_volume = simulated_volumes.sum()
+            use_proxy_vwap = False
+
             if total_volume == 0 or pd.isna(total_volume):
                 # Volume data is invalid - use spot VWAP as proxy
                 if 'vwap' in recent_slice.columns and not pd.isna(recent_slice['vwap'].iloc[-1]):
                     # Scale spot VWAP to option premium level (1.5% of spot)
                     spot_vwap = recent_slice['vwap'].iloc[-1]
                     option_vwap = spot_vwap * 0.015
+                    use_proxy_vwap = True
                     self.logger.debug(
                         f"Using spot VWAP proxy (volume data invalid): spot_vwap={spot_vwap:.2f}, option_vwap={option_vwap:.2f}"
                     )
@@ -507,16 +510,27 @@ class BacktestEngine:
 
             # Check VWAP condition: Premium must be > VWAP (smart money accumulation)
             vwap_buffer = self.config.strategy.vwap_buffer_percent
-            vwap_threshold = option_vwap * (1 + vwap_buffer)
 
-            if estimated_premium <= vwap_threshold:
-                # VWAP condition not met - no signal
-                self.logger.debug(
-                    f"NO SIGNAL | Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {'Bullish' if st_bullish else 'Bearish'} | "
-                    f"Premium: {estimated_premium:.2f} <= VWAP: {option_vwap:.2f} (VWAP condition failed)"
-                )
-                return None
+            # When using proxy VWAP, just check if price > VWAP (trending)
+            # Real VWAP check happens in live trading with actual option data
+            if use_proxy_vwap:
+                # Simplified check: current price above VWAP = bullish, below = bearish
+                if current_price <= recent_slice['vwap'].iloc[-1]:
+                    self.logger.debug(
+                        f"NO SIGNAL | Spot: {current_price:.2f} <= VWAP: {recent_slice['vwap'].iloc[-1]:.2f} (no trend)"
+                    )
+                    return None
+            else:
+                # Real option VWAP check with buffer
+                vwap_threshold = option_vwap * (1 + vwap_buffer)
+                if estimated_premium <= vwap_threshold:
+                    # VWAP condition not met - no signal
+                    self.logger.debug(
+                        f"NO SIGNAL | Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                        f"ADX: {current_adx:.1f} | ST: {'Bullish' if st_bullish else 'Bearish'} | "
+                        f"Premium: {estimated_premium:.2f} <= VWAP: {option_vwap:.2f} (VWAP condition failed)"
+                    )
+                    return None
         else:
             # Not enough data for VWAP calculation, skip
             return None
