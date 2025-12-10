@@ -334,19 +334,33 @@ class BacktestEngine:
             else:
                 listing_datetime = listing_date
 
-            # If from_date is before listing, adjust it
-            if from_date < listing_datetime:
-                self.logger.debug(
-                    f"{symbol}: Adjusting from_date from {from_date} to listing date {listing_datetime}"
-                )
-                from_date = listing_datetime
+            # Strip timezone info from from_date and to_date for comparison (if present)
+            from_date_naive = from_date.replace(tzinfo=None) if hasattr(from_date, 'tzinfo') and from_date.tzinfo else from_date
+            to_date_naive = to_date.replace(tzinfo=None) if hasattr(to_date, 'tzinfo') and to_date.tzinfo else to_date
 
-        # If from_date is now after to_date, option wasn't trading yet
-        if from_date >= to_date:
-            self.logger.debug(
-                f"{symbol}: Option not yet trading (from_date {from_date} >= to_date {to_date})"
-            )
-            return None
+            # If from_date is before listing, adjust it
+            if from_date_naive < listing_datetime:
+                self.logger.debug(
+                    f"{symbol}: Adjusting from_date from {from_date_naive} to listing date {listing_datetime}"
+                )
+                # Create new from_date preserving original timezone if it had one
+                if hasattr(from_date, 'tzinfo') and from_date.tzinfo:
+                    from_date = from_date.replace(
+                        year=listing_datetime.year,
+                        month=listing_datetime.month,
+                        day=listing_datetime.day,
+                        hour=listing_datetime.hour,
+                        minute=listing_datetime.minute
+                    )
+                else:
+                    from_date = listing_datetime
+
+            # Check if option wasn't trading yet
+            if from_date_naive >= to_date_naive:
+                self.logger.debug(
+                    f"{symbol}: Option not yet trading (from_date {from_date_naive} >= to_date {to_date_naive})"
+                )
+                return None
 
         try:
             data = self.executor.get_historical_data(
