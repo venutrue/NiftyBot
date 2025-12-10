@@ -22,6 +22,8 @@ from common.config import (
     TRAIL_FREQUENCY, TRAIL_INCREMENT, MAX_PROFIT_GIVEBACK,
     SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER,
     ADX_ENTRY_THRESHOLD, VWAP_BUFFER_PERCENT,
+    GAP_DETECTION_ENABLED, MEDIUM_GAP_THRESHOLD, LARGE_GAP_THRESHOLD,
+    MEDIUM_GAP_WAIT_MINUTES, LARGE_GAP_WAIT_MINUTES,
     TRAILING_STOP_METHOD, TRAILING_EMA_PERIOD,
     TRADING_START_HOUR, TRADING_START_MINUTE,
     LAST_ENTRY_HOUR, LAST_ENTRY_MINUTE,
@@ -69,6 +71,12 @@ class NiftyBot:
         # Position tracking
         self.max_premium_seen = {}  # Track highest premium for trailing
 
+        # Gap detection tracking
+        self.gap_detected = False
+        self.gap_percentage = 0.0
+        self.previous_close = None
+        self.trading_delay_until = None  # Datetime when trading can start
+
         # Instrument cache (avoid repeated API calls)
         self._nfo_instruments = None
         self._instruments_loaded = False
@@ -80,6 +88,13 @@ class NiftyBot:
         self.daily_pnl = 0
         self.active_positions = {}
         self.max_premium_seen = {}
+
+        # Reset gap detection
+        self.gap_detected = False
+        self.gap_percentage = 0.0
+        self.previous_close = None
+        self.trading_delay_until = None
+
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
         self._instruments_loaded = False
@@ -164,6 +179,12 @@ class NiftyBot:
 
                 # CRITICAL: Validate data freshness
                 last_candle_time = df['date'].iloc[-1]
+                # Remove timezone info to avoid tz-naive/tz-aware comparison error
+                if hasattr(last_candle_time, 'tz_localize'):
+                    last_candle_time = last_candle_time.tz_localize(None)
+                elif hasattr(last_candle_time, 'replace') and last_candle_time.tzinfo is not None:
+                    last_candle_time = last_candle_time.replace(tzinfo=None)
+
                 data_age_seconds = (datetime.datetime.now() - last_candle_time).total_seconds()
 
                 if data_age_seconds > 300:  # 5 minutes
@@ -279,6 +300,101 @@ class NiftyBot:
 
         return lots
 
+    def detect_gap(self, df):
+        """
+        Detect gap at market open and determine trading delay.
+
+        Gap Protection Strategy:
+        - Medium Gap (0.4-0.8%): Wait 30 minutes (trade from 9:45 AM)
+        - Large Gap (>0.8%): Wait 60 minutes (trade from 10:15 AM)
+
+        This avoids gap-fill traps where premium crashes after initial excitement.
+
+        Args:
+            df: DataFrame with NIFTY spot data
+
+        Returns:
+            None (updates internal state)
+        """
+        if not GAP_DETECTION_ENABLED:
+            return
+
+        # Only detect gap once per day at market open
+        if self.gap_detected:
+            return
+
+        now = datetime.datetime.now()
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+
+        # Only check within first 5 minutes of market open
+        if now > market_open + datetime.timedelta(minutes=5):
+            # Too late to detect gap, assume no gap
+            self.gap_detected = True
+            return
+
+        if df is None or len(df) < 2:
+            return
+
+        # Get today's open and yesterday's close
+        first_candle = df.iloc[0]
+        today_open = first_candle['open']
+
+        # Store previous close for future reference
+        if self.previous_close is None:
+            # Get previous close from historical data
+            # Use the close from the last candle of previous day
+            # For simplicity, we'll use yesterday's data
+            yesterday = now - datetime.timedelta(days=1)
+            yesterday_data = self.executor.get_historical_data(
+                instrument_token=NIFTY_50_TOKEN,
+                from_date=yesterday.replace(hour=15, minute=0),
+                to_date=yesterday.replace(hour=15, minute=30),
+                interval="minute"
+            )
+
+            if yesterday_data and len(yesterday_data) > 0:
+                self.previous_close = yesterday_data[-1]['close']
+            else:
+                # Fallback: use first candle's open as previous close (assumes no gap)
+                self.previous_close = today_open
+
+        # Calculate gap percentage
+        self.gap_percentage = ((today_open - self.previous_close) / self.previous_close) * 100
+        self.gap_detected = True
+
+        # Determine trading delay based on gap size
+        if abs(self.gap_percentage) >= LARGE_GAP_THRESHOLD:
+            # Large gap: wait 60 minutes
+            self.trading_delay_until = market_open + datetime.timedelta(minutes=LARGE_GAP_WAIT_MINUTES)
+            gap_type = "LARGE"
+            wait_min = LARGE_GAP_WAIT_MINUTES
+
+        elif abs(self.gap_percentage) >= MEDIUM_GAP_THRESHOLD:
+            # Medium gap: wait 30 minutes
+            self.trading_delay_until = market_open + datetime.timedelta(minutes=MEDIUM_GAP_WAIT_MINUTES)
+            gap_type = "MEDIUM"
+            wait_min = MEDIUM_GAP_WAIT_MINUTES
+
+        else:
+            # No significant gap: trade normally
+            self.trading_delay_until = None
+            gap_type = "NORMAL"
+            wait_min = 0
+
+        # Log gap detection
+        gap_direction = "UP" if self.gap_percentage > 0 else "DOWN"
+        if abs(self.gap_percentage) >= MEDIUM_GAP_THRESHOLD:
+            self.logger.warning(
+                f"🚨 GAP DETECTED: {gap_type} GAP {gap_direction} of {abs(self.gap_percentage):.2f}% | "
+                f"Previous Close: {self.previous_close:.2f} | Today Open: {today_open:.2f} | "
+                f"Trading delayed by {wait_min} minutes (start at {self.trading_delay_until.strftime('%H:%M')})"
+            )
+        else:
+            self.logger.info(
+                f"✓ Normal gap: {self.gap_percentage:+.2f}% | "
+                f"Previous Close: {self.previous_close:.2f} | Today Open: {today_open:.2f}"
+            )
+
     def fetch_data(self):
         """Fetch NIFTY minute data with all indicators."""
         now = datetime.datetime.now()
@@ -346,6 +462,12 @@ class NiftyBot:
             # Get both historical close and real-time LTP for comparison
             historical_close = opt_data['close'].iloc[-1]
             historical_timestamp = opt_data['date'].iloc[-1]
+            # Remove timezone info to avoid tz-naive/tz-aware comparison error
+            if hasattr(historical_timestamp, 'tz_localize'):
+                historical_timestamp = historical_timestamp.tz_localize(None)
+            elif hasattr(historical_timestamp, 'replace') and historical_timestamp.tzinfo is not None:
+                historical_timestamp = historical_timestamp.replace(tzinfo=None)
+
             ltp = self.executor.get_ltp(symbol, EXCHANGE_NFO)
 
             # CRITICAL: Check how old the historical data is
@@ -612,6 +734,9 @@ class NiftyBot:
         if df is None or len(df) < 20:
             self.logger.debug("Insufficient data")
             return signals
+
+        # Detect gap at market open (only runs once per day)
+        self.detect_gap(df)
 
         # Check exits first (always check exits)
         exit_signals = self._check_exits(df)
@@ -908,12 +1033,23 @@ class NiftyBot:
                     del self.max_premium_seen[symbol]
 
     def _is_trading_time(self, now):
-        """Check if within trading hours."""
+        """Check if within trading hours (accounts for gap delays)."""
         market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
         market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0)
         trading_start = now.replace(hour=TRADING_START_HOUR, minute=TRADING_START_MINUTE, second=0)
 
-        return trading_start <= now <= market_close
+        # Check if gap delay is active
+        if self.trading_delay_until is not None:
+            # Gap detected, use delayed start time
+            if now < self.trading_delay_until:
+                # Still in delay period
+                return False
+            else:
+                # Delay period over, trade normally
+                return now <= market_close
+        else:
+            # No gap delay, use normal trading hours
+            return trading_start <= now <= market_close
 
     def _is_force_exit_time(self, now):
         """Check if it's time to force exit all positions."""

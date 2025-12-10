@@ -155,6 +155,19 @@ ADX_ENTRY_THRESHOLD = 23              # Enter only when ADX > 23
 VWAP_BUFFER_PERCENT = 0.1             # 0.1% buffer around VWAP
 
 ##############################################
+# GAP PROTECTION (Avoid gap-fill traps)
+##############################################
+
+# Gap detection thresholds
+GAP_DETECTION_ENABLED = True          # Enable/disable gap protection
+MEDIUM_GAP_THRESHOLD = 0.4            # 0.4% gap = medium gap
+LARGE_GAP_THRESHOLD = 0.8             # 0.8% gap = large gap
+
+# Trading delays on gap days (in minutes from market open)
+MEDIUM_GAP_WAIT_MINUTES = 30          # Wait 30 min on medium gap (start at 9:45 AM)
+LARGE_GAP_WAIT_MINUTES = 60           # Wait 60 min on large gap (start at 10:15 AM)
+
+##############################################
 # EXIT PARAMETERS
 ##############################################
 
