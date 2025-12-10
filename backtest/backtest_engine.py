@@ -357,22 +357,35 @@ class BacktestEngine:
                 )
                 return None
 
-            # If from_date is before listing, adjust it
+            # If from_date is before listing, adjust it with safety buffer
             if from_date_naive < listing_datetime:
+                # Add 1 day buffer after listing to ensure option has been trading
+                safe_from_date = listing_datetime + datetime.timedelta(days=1)
+
                 self.logger.debug(
-                    f"{symbol}: Adjusting from_date from {from_date_naive} to listing date {listing_datetime}"
+                    f"{symbol}: Adjusting from_date from {from_date_naive} to {safe_from_date} "
+                    f"(listing {listing_datetime.date()} + 1 day buffer)"
                 )
+
+                # Check if safe date is still before to_date
+                if safe_from_date >= to_date_naive:
+                    self.logger.info(
+                        f"{symbol}: SKIPPED - too soon after listing "
+                        f"(safe from {safe_from_date.date()} >= to_date {to_date_naive.date()})"
+                    )
+                    return None
+
                 # Create new from_date preserving original timezone if it had one
                 if hasattr(from_date, 'tzinfo') and from_date.tzinfo:
                     from_date = from_date.replace(
-                        year=listing_datetime.year,
-                        month=listing_datetime.month,
-                        day=listing_datetime.day,
-                        hour=listing_datetime.hour,
-                        minute=listing_datetime.minute
+                        year=safe_from_date.year,
+                        month=safe_from_date.month,
+                        day=safe_from_date.day,
+                        hour=safe_from_date.hour,
+                        minute=safe_from_date.minute
                     )
                 else:
-                    from_date = listing_datetime
+                    from_date = safe_from_date
 
         try:
             # DEBUG: Log the actual dates being sent to API
