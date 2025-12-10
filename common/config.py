@@ -131,9 +131,14 @@ MAX_CONSECUTIVE_LOSSES = 2            # Stop after 2 consecutive losses
 MAX_WEEKLY_LOSS = 40000               # Rs. 40K max weekly loss
 
 # Stop loss percentages (on premium)
-INITIAL_SL_PERCENT = 15               # 15% initial stop loss (tighter for intraday)
-BREAKEVEN_TRIGGER_PERCENT = 12        # Move SL to entry at +12% profit (realistic for intraday options)
-TRAIL_PERCENT = 50                    # Trail at 50% of max profit
+INITIAL_SL_PERCENT = 10               # 10% initial stop loss (ultra-aggressive for intraday)
+BREAKEVEN_TRIGGER_PERCENT = 5         # Move SL to entry at +5% profit (realistic for intraday)
+TRAIL_PERCENT = 50                    # Trail at 50% of max profit (legacy - used by 'percent' method)
+
+# Ultra-aggressive trailing parameters (NEW!)
+TRAIL_FREQUENCY = 3                   # Trail stop loss every 3% gain
+TRAIL_INCREMENT = 2                   # Lock 2% profit with each trail step
+MAX_PROFIT_GIVEBACK = 30              # Never give back >30% of max profit seen
 
 ##############################################
 # ENTRY PARAMETERS (VWAP + Supertrend + ADX)
@@ -153,8 +158,11 @@ VWAP_BUFFER_PERCENT = 0.1             # 0.1% buffer around VWAP
 # EXIT PARAMETERS
 ##############################################
 
-# Trailing stop method: 'supertrend', 'percent', or 'ema'
-TRAILING_STOP_METHOD = 'supertrend'
+# Trailing stop method: 'dynamic', 'supertrend', 'percent', or 'ema'
+# 'dynamic' = Progressive trailing with TRAIL_FREQUENCY and TRAIL_INCREMENT (recommended for intraday)
+# 'supertrend' = Exit on supertrend flip (legacy)
+# 'percent' = Trail at TRAIL_PERCENT of max profit (legacy)
+TRAILING_STOP_METHOD = 'dynamic'
 
 # EMA for trailing (if using EMA method)
 TRAILING_EMA_PERIOD = 5
