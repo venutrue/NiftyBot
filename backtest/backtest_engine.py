@@ -197,17 +197,31 @@ class BacktestEngine:
             return None
 
     def _get_option_token(self, symbol):
-        """Get instrument token for an option symbol."""
+        """
+        Get instrument token and metadata for an option symbol.
+
+        Returns:
+            Tuple of (token, listing_date) or (None, None) if not found
+        """
         instruments = self._load_nfo_instruments()
         if instruments is None:
-            return None
+            return None, None
 
         for inst in instruments:
             if inst['tradingsymbol'] == symbol:
-                return inst['instrument_token']
+                token = inst['instrument_token']
+                # Get listing date (when option started trading)
+                # NSE lists weekly options on previous Thursday (4 days before expiry for Tuesday expiry)
+                # For safety, use expiry - 7 days as earliest possible data
+                expiry = inst.get('expiry')
+                if expiry:
+                    listing_date = expiry - datetime.timedelta(days=7)
+                else:
+                    listing_date = None
+                return token, listing_date
 
         self.logger.warning(f"Symbol '{symbol}' not found in NFO instruments")
-        return None
+        return None, None
 
     def _get_weekly_expiry(self, reference_date):
         """
@@ -306,10 +320,32 @@ class BacktestEngine:
             self.logger.debug(f"Using cached data for {symbol}")
             return self._option_data_cache[cache_key]
 
-        # Get token for this option
-        token = self._get_option_token(symbol)
+        # Get token and listing date for this option
+        token, listing_date = self._get_option_token(symbol)
         if token is None:
             self.logger.debug(f"Could not find token for {symbol}")
+            return None
+
+        # CRITICAL: Ensure we don't fetch data from before option started trading
+        if listing_date:
+            # Convert to datetime for comparison
+            if isinstance(listing_date, datetime.date):
+                listing_datetime = datetime.datetime.combine(listing_date, datetime.time(9, 15))
+            else:
+                listing_datetime = listing_date
+
+            # If from_date is before listing, adjust it
+            if from_date < listing_datetime:
+                self.logger.debug(
+                    f"{symbol}: Adjusting from_date from {from_date} to listing date {listing_datetime}"
+                )
+                from_date = listing_datetime
+
+        # If from_date is now after to_date, option wasn't trading yet
+        if from_date >= to_date:
+            self.logger.debug(
+                f"{symbol}: Option not yet trading (from_date {from_date} >= to_date {to_date})"
+            )
             return None
 
         try:
@@ -328,6 +364,8 @@ class BacktestEngine:
                 self._option_data_cache[cache_key] = df
 
                 return df
+            else:
+                self.logger.debug(f"{symbol}: No data returned for period {from_date} to {to_date}")
 
         except Exception as e:
             self.logger.error(f"Failed to fetch option data for {symbol}: {str(e)}")
