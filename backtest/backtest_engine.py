@@ -169,6 +169,11 @@ class BacktestEngine:
         # Instantiate bot
         self.bot = bot_class(self.executor)
 
+        # Option data caching (avoid redundant API calls)
+        self._option_data_cache = {}  # {symbol: DataFrame}
+        self._instruments_cache = None
+        self._current_expiry = None
+
     def connect(self):
         """Connect to Kite for historical data."""
         if not self.executor.connect():
@@ -176,6 +181,158 @@ class BacktestEngine:
             return False
         self.logger.info("Connected to Kite for historical data")
         return True
+
+    def _load_nfo_instruments(self):
+        """Load NFO instruments list (cached)."""
+        if self._instruments_cache is not None:
+            return self._instruments_cache
+
+        try:
+            from common.config import EXCHANGE_NFO
+            self._instruments_cache = self.executor.get_instruments(EXCHANGE_NFO)
+            self.logger.info(f"Loaded {len(self._instruments_cache)} NFO instruments")
+            return self._instruments_cache
+        except Exception as e:
+            self.logger.error(f"Failed to load NFO instruments: {str(e)}")
+            return None
+
+    def _get_option_token(self, symbol):
+        """Get instrument token for an option symbol."""
+        instruments = self._load_nfo_instruments()
+        if instruments is None:
+            return None
+
+        for inst in instruments:
+            if inst['tradingsymbol'] == symbol:
+                return inst['instrument_token']
+
+        self.logger.warning(f"Symbol '{symbol}' not found in NFO instruments")
+        return None
+
+    def _get_weekly_expiry(self, reference_date):
+        """
+        Get the nearest weekly expiry date from actual Kite instruments.
+
+        Args:
+            reference_date: Date to find expiry for (datetime.date or datetime.datetime)
+
+        Returns:
+            datetime.date object for nearest expiry, or None if not found
+        """
+        instruments = self._load_nfo_instruments()
+        if not instruments:
+            self.logger.error("No instruments loaded, cannot determine expiry")
+            return None
+
+        # Convert to date if datetime
+        if isinstance(reference_date, datetime.datetime):
+            reference_date = reference_date.date()
+
+        # Extract all unique expiry dates for NIFTY options >= reference date
+        nifty_expiries = set()
+        for inst in instruments:
+            if inst['name'] == 'NIFTY' and inst['instrument_type'] in ['CE', 'PE']:
+                expiry = inst.get('expiry')
+                if expiry and expiry >= reference_date:
+                    nifty_expiries.add(expiry)
+
+        if not nifty_expiries:
+            self.logger.error(f"No NIFTY expiries found >= {reference_date}")
+            return None
+
+        # Get the nearest expiry (min of all future expiries)
+        nearest_expiry = min(nifty_expiries)
+
+        self.logger.debug(f"Using NIFTY expiry: {nearest_expiry} for date {reference_date}")
+        return nearest_expiry
+
+    def _get_option_symbol(self, strike, option_type, reference_date):
+        """
+        Build NIFTY option symbol in Kite/NSE format for WEEKLY options.
+
+        Args:
+            strike: Strike price
+            option_type: 'CE' or 'PE'
+            reference_date: Date to determine which expiry to use
+
+        Returns:
+            Option symbol string, or None if failed
+        """
+        # Check if expiry needs to be updated (daily or when crossing expiry)
+        if isinstance(reference_date, datetime.datetime):
+            reference_date = reference_date.date()
+
+        # Get expiry for this reference date
+        expiry_date = self._get_weekly_expiry(reference_date)
+        if not expiry_date:
+            self.logger.error("Could not determine expiry date")
+            return None
+
+        # Cache the expiry we're using
+        if self._current_expiry != expiry_date:
+            self._current_expiry = expiry_date
+            self.logger.info(f"Trading expiry updated: {expiry_date.strftime('%Y-%m-%d')} ({expiry_date.strftime('%A')})")
+
+        # NSE weekly options use single-character month codes
+        month_codes = {
+            1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6',
+            7: '7', 8: '8', 9: '9', 10: 'O', 11: 'N', 12: 'D'
+        }
+
+        year = expiry_date.strftime("%y")
+        month_code = month_codes[expiry_date.month]
+        day = expiry_date.strftime("%d")
+
+        # Weekly format: NIFTY + YY + M + DD + STRIKE + CE/PE
+        symbol = f"NIFTY{year}{month_code}{day}{int(strike)}{option_type}"
+
+        return symbol
+
+    def _fetch_option_historical_data(self, symbol, from_date, to_date):
+        """
+        Fetch real option historical data with VWAP.
+
+        Args:
+            symbol: Option trading symbol (e.g., NIFTY25D1626200CE)
+            from_date: Start date/time
+            to_date: End date/time
+
+        Returns:
+            DataFrame with option OHLCV and VWAP, or None if failed
+        """
+        # Check cache first (key by symbol + date range)
+        cache_key = f"{symbol}_{from_date.strftime('%Y%m%d%H%M')}_{to_date.strftime('%Y%m%d%H%M')}"
+        if cache_key in self._option_data_cache:
+            self.logger.debug(f"Using cached data for {symbol}")
+            return self._option_data_cache[cache_key]
+
+        # Get token for this option
+        token = self._get_option_token(symbol)
+        if token is None:
+            self.logger.debug(f"Could not find token for {symbol}")
+            return None
+
+        try:
+            data = self.executor.get_historical_data(
+                instrument_token=token,
+                from_date=from_date,
+                to_date=to_date,
+                interval="5minute"  # Match backtest interval
+            )
+
+            if data and len(data) > 0:
+                df = pd.DataFrame(data)
+                df = compute_vwap(df)
+
+                # Cache the data
+                self._option_data_cache[cache_key] = df
+
+                return df
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch option data for {symbol}: {str(e)}")
+
+        return None
 
     def calculate_position_size(self, premium: float) -> int:
         """
@@ -426,12 +583,13 @@ class BacktestEngine:
 
     def _check_bot_signal(self, df_slice: pd.DataFrame, current_time) -> Optional[str]:
         """
-        Check if bot generates entry signal at current time.
+        Check if bot generates entry signal at current time using REAL option data.
 
-        Simulates the full VWAP + Supertrend + ADX entry strategy:
-        - Premium > VWAP (simulated option VWAP)
-        - Supertrend bullish/bearish
-        - ADX > threshold
+        NEW ARCHITECTURE: Fetches actual option contracts with real volume for accurate VWAP.
+        Entry strategy:
+        - Premium > VWAP (REAL option VWAP from actual volume)
+        - Supertrend bullish/bearish (on spot)
+        - ADX > threshold (on spot)
 
         Returns: 'BUY_CE', 'BUY_PE', or None
         """
@@ -445,11 +603,11 @@ class BacktestEngine:
         if current_time.hour > 14 or (current_time.hour == 14 and current_time.minute > 30):
             return None
 
-        # Get current values
+        # Get current values from spot data
         current_adx = df_slice['ADX'].iloc[-1]
         current_price = df_slice['close'].iloc[-1]
 
-        # Check indicators (already imported at module level)
+        # Check indicators on spot (already imported at module level)
         st_bullish = is_supertrend_bullish(df_slice)
         st_bearish = is_supertrend_bearish(df_slice)
         atm_strike = get_atm_strike(current_price)
@@ -460,87 +618,75 @@ class BacktestEngine:
         if pd.isna(current_adx) or current_adx < adx_threshold:
             return None
 
-        # CRITICAL FIX: Check VWAP conditions on options
-        # In backtest, we simulate option VWAP using a simplified model:
-        # - Option premium follows spot movement with delta correlation
-        # - VWAP accumulation happens when premium > historical average
-        # - We check if current premium is above its intraday VWAP
-
-        # Estimate option premium (1.5% of spot for ATM)
-        estimated_premium = current_price * 0.015
-
-        # Calculate simulated option VWAP from recent candles
-        # Use last 30 candles to estimate intraday option VWAP
-        if len(df_slice) >= 30:
-            recent_slice = df_slice.tail(30)
-            # Simulate option premium movement (correlated to spot)
-            simulated_premiums = recent_slice['close'] * 0.015
-            simulated_volumes = recent_slice['volume']
-
-            # FIX: Check if volume data is valid (indices have zero/invalid volume)
-            total_volume = simulated_volumes.sum()
-            if total_volume == 0 or pd.isna(total_volume):
-                # Volume data is invalid - use spot VWAP as proxy
-                if 'vwap' in recent_slice.columns and not pd.isna(recent_slice['vwap'].iloc[-1]):
-                    # Scale spot VWAP to option premium level (1.5% of spot)
-                    spot_vwap = recent_slice['vwap'].iloc[-1]
-                    option_vwap = spot_vwap * 0.015
-                    self.logger.debug(
-                        f"Using spot VWAP proxy (volume data invalid): spot_vwap={spot_vwap:.2f}, option_vwap={option_vwap:.2f}"
-                    )
-                else:
-                    # No valid VWAP data available, skip signal
-                    self.logger.debug(
-                        f"NO SIGNAL | No valid VWAP data available (volume={total_volume})"
-                    )
-                    return None
-            else:
-                # Calculate VWAP for simulated option using volume
-                option_vwap = (simulated_premiums * simulated_volumes).sum() / total_volume
-
-            # Validate option_vwap is not NaN
-            if pd.isna(option_vwap) or option_vwap <= 0:
-                self.logger.debug(
-                    f"NO SIGNAL | Invalid option VWAP calculated: {option_vwap}"
-                )
-                return None
-
-            # Check VWAP condition: Premium must be > VWAP (smart money accumulation)
-            vwap_buffer = self.config.strategy.vwap_buffer_percent
-            vwap_threshold = option_vwap * (1 + vwap_buffer)
-
-            if estimated_premium <= vwap_threshold:
-                # VWAP condition not met - no signal
-                self.logger.debug(
-                    f"NO SIGNAL | Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {'Bullish' if st_bullish else 'Bearish'} | "
-                    f"Premium: {estimated_premium:.2f} <= VWAP: {option_vwap:.2f} (VWAP condition failed)"
-                )
-                return None
+        # NEW: Fetch REAL option data for ATM strike
+        # Determine option type based on Supertrend
+        if st_bullish:
+            option_type = 'CE'
+            signal_type = 'BUY_CE'
+        elif st_bearish:
+            option_type = 'PE'
+            signal_type = 'BUY_PE'
         else:
-            # Not enough data for VWAP calculation, skip
+            # No clear trend
             return None
 
-        # All conditions met - generate signal
-        if st_bullish:
-            self.logger.info(
-                f"✓ SIGNAL: BUY_CE | Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                f"ADX: {current_adx:.1f} | ST: Bullish | "
-                f"Premium: {estimated_premium:.2f} > VWAP: {option_vwap:.2f} (+{((estimated_premium/option_vwap-1)*100):.1f}%)"
-            )
-            return 'BUY_CE'
-        elif st_bearish:
-            self.logger.info(
-                f"✓ SIGNAL: BUY_PE | Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                f"ADX: {current_adx:.1f} | ST: Bearish | "
-                f"Premium: {estimated_premium:.2f} > VWAP: {option_vwap:.2f} (+{((estimated_premium/option_vwap-1)*100):.1f}%)"
-            )
-            return 'BUY_PE'
+        # Build option symbol for ATM strike
+        option_symbol = self._get_option_symbol(atm_strike, option_type, current_time)
+        if option_symbol is None:
+            self.logger.debug(f"Could not build option symbol for ATM {atm_strike} {option_type}")
+            return None
 
-        return None
+        # Fetch real option historical data
+        # Get data from market open (or start of day) to current time for VWAP calculation
+        market_open = current_time.replace(hour=9, minute=15, second=0, microsecond=0)
+        from_date = max(market_open, current_time - datetime.timedelta(hours=2))
+
+        option_data = self._fetch_option_historical_data(option_symbol, from_date, current_time)
+
+        if option_data is None or len(option_data) == 0:
+            self.logger.debug(
+                f"NO SIGNAL | Could not fetch option data for {option_symbol}"
+            )
+            return None
+
+        # Get real option premium and VWAP
+        real_premium = option_data['close'].iloc[-1]
+        real_vwap = option_data['vwap'].iloc[-1]
+        real_volume = option_data['volume'].iloc[-1]
+
+        # Validate VWAP is not NaN (can happen with zero volume)
+        if pd.isna(real_vwap) or real_vwap <= 0:
+            self.logger.debug(
+                f"NO SIGNAL | {option_symbol} has invalid VWAP (NaN or zero). Volume: {real_volume}"
+            )
+            return None
+
+        # Check VWAP condition: Premium must be > VWAP (smart money accumulation)
+        vwap_buffer = self.config.strategy.vwap_buffer_percent
+        vwap_threshold = real_vwap * (1 + vwap_buffer)
+
+        if real_premium <= vwap_threshold:
+            # VWAP condition not met - no signal
+            self.logger.debug(
+                f"NO SIGNAL | {option_symbol} | Spot: {current_price:.2f} | ATM: {atm_strike} | "
+                f"ADX: {current_adx:.1f} | ST: {'Bullish' if st_bullish else 'Bearish'} | "
+                f"Premium: {real_premium:.2f} <= VWAP: {real_vwap:.2f} (+{vwap_buffer*100:.1f}% buffer) "
+                f"(VWAP condition failed)"
+            )
+            return None
+
+        # All conditions met - generate signal with REAL data
+        vwap_diff_pct = ((real_premium - real_vwap) / real_vwap) * 100
+        self.logger.info(
+            f"✓ SIGNAL: {signal_type} | {option_symbol} | Spot: {current_price:.2f} | ATM: {atm_strike} | "
+            f"ADX: {current_adx:.1f} | ST: {'Bullish' if st_bullish else 'Bearish'} | "
+            f"Premium: {real_premium:.2f} > VWAP: {real_vwap:.2f} (+{vwap_diff_pct:.1f}%)"
+        )
+
+        return signal_type
 
     def _enter_trade(self, signal: str, entry_time, spot_price: float) -> Optional[Trade]:
-        """Enter a new trade based on signal."""
+        """Enter a new trade based on signal using REAL option premium."""
         try:
             # Get ATM strike
             atm_strike = get_atm_strike(
@@ -551,12 +697,28 @@ class BacktestEngine:
             # Determine option type
             option_type = "CE" if signal == "BUY_CE" else "PE"
 
-            # Get option symbol
-            symbol = self.bot.get_option_symbol(atm_strike, option_type)
+            # Build option symbol using backtest's method (handles expiry correctly)
+            symbol = self._get_option_symbol(atm_strike, option_type, entry_time)
+            if symbol is None:
+                self.logger.error(f"Could not build option symbol for ATM {atm_strike} {option_type}")
+                return None
 
-            # Estimate option premium (simplified: 1-2% of spot for ATM)
-            # In production, use actual historical option data
-            premium = spot_price * 0.015  # 1.5% of spot
+            # NEW: Fetch REAL option premium from historical data
+            market_open = entry_time.replace(hour=9, minute=15, second=0, microsecond=0)
+            from_date = max(market_open, entry_time - datetime.timedelta(hours=2))
+
+            option_data = self._fetch_option_historical_data(symbol, from_date, entry_time)
+
+            if option_data is None or len(option_data) == 0:
+                self.logger.error(f"Could not fetch option data for {symbol} at {entry_time}")
+                return None
+
+            # Get REAL premium from option data
+            premium = option_data['close'].iloc[-1]
+
+            if pd.isna(premium) or premium <= 0:
+                self.logger.error(f"Invalid premium for {symbol}: {premium}")
+                return None
 
             # Apply slippage on entry
             entry_price = premium * (1 + self.config.slippage_percent)
@@ -578,6 +740,10 @@ class BacktestEngine:
                 stop_loss=stop_loss,
                 target=target,
                 entry_spot=spot_price  # Store original spot price
+            )
+
+            self.logger.debug(
+                f"Trade entry: {symbol} @ ₹{entry_price:.2f} (real premium: ₹{premium:.2f} + slippage)"
             )
 
             return trade
