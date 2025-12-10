@@ -123,7 +123,7 @@ BANKNIFTY_MAX_TRADES_PER_DAY = 2      # Max trades for BANKNIFTY bot
 ##############################################
 
 # Daily limits
-NIFTY_MAX_TRADES_PER_DAY = 2          # Quality over quantity
+NIFTY_MAX_TRADES_PER_DAY = 50         # Max 50 trades per day (high frequency trading)
 MAX_LOSS_PER_DAY = 20000              # Rs. 20K max daily loss - stop trading
 MAX_CONSECUTIVE_LOSSES = 2            # Stop after 2 consecutive losses
 

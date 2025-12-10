@@ -26,7 +26,13 @@ def compute_vwap(df):
     """
     df = df.copy()
     df["TP"] = (df["high"] + df["low"] + df["close"]) / 3
-    df["vwap"] = (df["TP"] * df["volume"]).cumsum() / df["volume"].cumsum()
+
+    # FIX: Handle zero volume gracefully
+    cum_volume = df["volume"].cumsum()
+    # Replace zeros with NaN, then forward fill to prevent division by zero
+    cum_volume_safe = cum_volume.replace(0, np.nan)
+
+    df["vwap"] = (df["TP"] * df["volume"]).cumsum() / cum_volume_safe
     return df
 
 def volume_ratio(df, period=10):

@@ -40,7 +40,7 @@ class RiskLimits:
     # Daily limits
     max_loss_per_day: float = MAX_LOSS_PER_DAY
     max_profit_per_day: Optional[float] = None  # Stop when daily target hit
-    max_trades_per_day: int = 10
+    max_trades_per_day: int = 50  # Aligned with NIFTY_MAX_TRADES_PER_DAY
     max_consecutive_losses: int = MAX_CONSECUTIVE_LOSSES
 
     # Per-trade limits
