@@ -516,6 +516,14 @@ class NiftyBot:
             volume = opt_data['volume'].iloc[-1]
             avg_volume = opt_data['volume'].mean()
 
+            # CRITICAL: Validate VWAP is not NaN (can happen with zero volume)
+            if pd.isna(vwap) or vwap <= 0:
+                self.logger.warning(
+                    f"{symbol}: Invalid VWAP (NaN or zero), skipping strike. "
+                    f"Volume: {volume}, Avg Volume: {avg_volume:.0f}"
+                )
+                continue  # Skip this strike
+
             # Calculate signal strength metrics
             vwap_diff = premium - vwap
             vwap_pct = ((premium - vwap) / vwap * 100) if vwap > 0 else 0
