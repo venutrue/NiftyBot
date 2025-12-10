@@ -338,6 +338,13 @@ class BacktestEngine:
             from_date_naive = from_date.replace(tzinfo=None) if hasattr(from_date, 'tzinfo') and from_date.tzinfo else from_date
             to_date_naive = to_date.replace(tzinfo=None) if hasattr(to_date, 'tzinfo') and to_date.tzinfo else to_date
 
+            # If listing date is after to_date, option wasn't trading during this period at all
+            if listing_datetime >= to_date_naive:
+                self.logger.debug(
+                    f"{symbol}: Option not yet listed (listing {listing_datetime} >= to_date {to_date_naive})"
+                )
+                return None
+
             # If from_date is before listing, adjust it
             if from_date_naive < listing_datetime:
                 self.logger.debug(
@@ -354,13 +361,6 @@ class BacktestEngine:
                     )
                 else:
                     from_date = listing_datetime
-
-            # Check if option wasn't trading yet
-            if from_date_naive >= to_date_naive:
-                self.logger.debug(
-                    f"{symbol}: Option not yet trading (from_date {from_date_naive} >= to_date {to_date_naive})"
-                )
-                return None
 
         try:
             data = self.executor.get_historical_data(
