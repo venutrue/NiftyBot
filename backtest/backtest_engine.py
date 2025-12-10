@@ -477,8 +477,33 @@ class BacktestEngine:
             simulated_premiums = recent_slice['close'] * 0.015
             simulated_volumes = recent_slice['volume']
 
-            # Calculate VWAP for simulated option
-            option_vwap = (simulated_premiums * simulated_volumes).sum() / simulated_volumes.sum()
+            # FIX: Check if volume data is valid (indices have zero/invalid volume)
+            total_volume = simulated_volumes.sum()
+            if total_volume == 0 or pd.isna(total_volume):
+                # Volume data is invalid - use spot VWAP as proxy
+                if 'vwap' in recent_slice.columns and not pd.isna(recent_slice['vwap'].iloc[-1]):
+                    # Scale spot VWAP to option premium level (1.5% of spot)
+                    spot_vwap = recent_slice['vwap'].iloc[-1]
+                    option_vwap = spot_vwap * 0.015
+                    self.logger.debug(
+                        f"Using spot VWAP proxy (volume data invalid): spot_vwap={spot_vwap:.2f}, option_vwap={option_vwap:.2f}"
+                    )
+                else:
+                    # No valid VWAP data available, skip signal
+                    self.logger.debug(
+                        f"NO SIGNAL | No valid VWAP data available (volume={total_volume})"
+                    )
+                    return None
+            else:
+                # Calculate VWAP for simulated option using volume
+                option_vwap = (simulated_premiums * simulated_volumes).sum() / total_volume
+
+            # Validate option_vwap is not NaN
+            if pd.isna(option_vwap) or option_vwap <= 0:
+                self.logger.debug(
+                    f"NO SIGNAL | Invalid option VWAP calculated: {option_vwap}"
+                )
+                return None
 
             # Check VWAP condition: Premium must be > VWAP (smart money accumulation)
             vwap_buffer = self.config.strategy.vwap_buffer_percent
