@@ -206,7 +206,14 @@ class KiteExecutor(BrokerInterface):
                     delay *= 2  # Exponential backoff
                 else:
                     # Non-network error or last attempt
-                    if attempt == API_MAX_RETRIES:
+                    # Special case: "invalid from date" errors are expected during backtesting
+                    # when we try to fetch data for options that don't exist yet
+                    is_expected_backtest_error = 'invalid from date' in error_str.lower() or 'invalid date' in error_str.lower()
+
+                    if is_expected_backtest_error:
+                        # Don't log as ERROR - this is expected when backtesting with new options
+                        self.logger.debug(f"{func_name}: {error_str} (expected - option not yet available)")
+                    elif attempt == API_MAX_RETRIES:
                         log_error("EXECUTOR",
                             f"{func_name}: Failed after {API_MAX_RETRIES} attempts: {error_str}")
                     else:
