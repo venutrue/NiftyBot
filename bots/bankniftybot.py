@@ -177,6 +177,23 @@ class BankNiftyBot:
             if data and len(data) > 0:
                 df = pd.DataFrame(data)
                 df = compute_vwap(df)
+
+                # CRITICAL: Validate data freshness
+                last_candle_time = df['date'].iloc[-1]
+                # Remove timezone info to avoid tz-naive/tz-aware comparison error
+                if hasattr(last_candle_time, 'tz_localize'):
+                    last_candle_time = last_candle_time.tz_localize(None)
+                elif hasattr(last_candle_time, 'replace') and last_candle_time.tzinfo is not None:
+                    last_candle_time = last_candle_time.replace(tzinfo=None)
+
+                data_age_seconds = (datetime.datetime.now() - last_candle_time).total_seconds()
+
+                if data_age_seconds > 300:  # 5 minutes
+                    self.logger.warning(
+                        f"{symbol}: Historical data delayed by {data_age_seconds:.0f}s "
+                        f"(last candle: {last_candle_time.strftime('%H:%M:%S')})"
+                    )
+
                 return df
 
         except Exception as e:

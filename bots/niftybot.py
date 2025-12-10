@@ -179,6 +179,12 @@ class NiftyBot:
 
                 # CRITICAL: Validate data freshness
                 last_candle_time = df['date'].iloc[-1]
+                # Remove timezone info to avoid tz-naive/tz-aware comparison error
+                if hasattr(last_candle_time, 'tz_localize'):
+                    last_candle_time = last_candle_time.tz_localize(None)
+                elif hasattr(last_candle_time, 'replace') and last_candle_time.tzinfo is not None:
+                    last_candle_time = last_candle_time.replace(tzinfo=None)
+
                 data_age_seconds = (datetime.datetime.now() - last_candle_time).total_seconds()
 
                 if data_age_seconds > 300:  # 5 minutes
@@ -456,6 +462,12 @@ class NiftyBot:
             # Get both historical close and real-time LTP for comparison
             historical_close = opt_data['close'].iloc[-1]
             historical_timestamp = opt_data['date'].iloc[-1]
+            # Remove timezone info to avoid tz-naive/tz-aware comparison error
+            if hasattr(historical_timestamp, 'tz_localize'):
+                historical_timestamp = historical_timestamp.tz_localize(None)
+            elif hasattr(historical_timestamp, 'replace') and historical_timestamp.tzinfo is not None:
+                historical_timestamp = historical_timestamp.replace(tzinfo=None)
+
             ltp = self.executor.get_ltp(symbol, EXCHANGE_NFO)
 
             # CRITICAL: Check how old the historical data is
