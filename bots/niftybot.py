@@ -159,6 +159,17 @@ class NiftyBot:
             if data and len(data) > 0:
                 df = pd.DataFrame(data)
                 df = compute_vwap(df)
+
+                # CRITICAL: Validate data freshness
+                last_candle_time = df['date'].iloc[-1]
+                data_age_seconds = (datetime.datetime.now() - last_candle_time).total_seconds()
+
+                if data_age_seconds > 300:  # 5 minutes
+                    self.logger.warning(
+                        f"{symbol}: Historical data delayed by {data_age_seconds:.0f}s "
+                        f"(last candle: {last_candle_time.strftime('%H:%M:%S')})"
+                    )
+
                 return df
 
         except Exception as e:
@@ -332,21 +343,43 @@ class NiftyBot:
 
             # Get both historical close and real-time LTP for comparison
             historical_close = opt_data['close'].iloc[-1]
+            historical_timestamp = opt_data['date'].iloc[-1]
             ltp = self.executor.get_ltp(symbol, EXCHANGE_NFO)
+
+            # CRITICAL: Check how old the historical data is
+            data_age_seconds = (datetime.datetime.now() - historical_timestamp).total_seconds()
+            if data_age_seconds > 180:  # More than 3 minutes old
+                self.logger.warning(
+                    f"{symbol}: Historical data is {data_age_seconds:.0f}s old "
+                    f"(last candle: {historical_timestamp.strftime('%H:%M:%S')})"
+                )
 
             # Use LTP if available, otherwise fallback to historical close
             if ltp is not None and ltp > 0:
                 premium = ltp
-                # Warn if LTP differs significantly from historical close (>10% difference)
+                self.logger.info(f"{symbol}: Using real-time LTP = ₹{ltp:.2f}")
+
+                # Warn if LTP differs significantly from historical close (lowered from 10% to 5%)
                 price_diff_pct = abs((ltp - historical_close) / historical_close * 100) if historical_close > 0 else 0
-                if price_diff_pct > 10:
+                if price_diff_pct > 5:
                     self.logger.warning(
-                        f"{symbol}: LTP (₹{ltp:.2f}) differs {price_diff_pct:.1f}% from historical close (₹{historical_close:.2f})"
+                        f"{symbol}: LTP (₹{ltp:.2f}) differs {price_diff_pct:.1f}% "
+                        f"from historical close (₹{historical_close:.2f})"
                     )
             else:
-                # Fallback to historical close if LTP unavailable
+                # CRITICAL: Don't use stale data for trading decisions!
+                if data_age_seconds > 180:
+                    self.logger.error(
+                        f"{symbol}: LTP unavailable and historical data too old "
+                        f"({data_age_seconds:.0f}s). Skipping this strike."
+                    )
+                    continue  # Skip this strike
+
                 premium = historical_close
-                self.logger.debug(f"{symbol}: Using historical close (LTP unavailable)")
+                self.logger.warning(
+                    f"{symbol}: LTP unavailable, using historical close = ₹{historical_close:.2f} "
+                    f"(age: {data_age_seconds:.0f}s)"
+                )
 
             vwap = opt_data['vwap'].iloc[-1]
             volume = opt_data['volume'].iloc[-1]
@@ -622,11 +655,21 @@ class NiftyBot:
         option_type = "CE" if signal_type == "BUY_CE" else "PE"
         symbol = self.get_option_symbol(atm_strike, option_type)
 
-        # Get option premium
+        # Get option premium with validation
         premium = self.get_option_premium(symbol)
         if premium is None:
             self.logger.error(f"Could not get premium for {symbol}")
             return None
+
+        # CRITICAL: Re-fetch to confirm (prevent stale data)
+        time.sleep(0.5)  # Small delay to ensure fresh data
+        premium_confirm = self.get_option_premium(symbol)
+        if premium_confirm and abs(premium_confirm - premium) / premium > 0.02:  # 2% difference
+            self.logger.warning(
+                f"{symbol}: Premium changed {premium:.2f} → {premium_confirm:.2f} "
+                f"({((premium_confirm-premium)/premium*100):.1f}%) during signal generation"
+            )
+            premium = premium_confirm  # Use latest
 
         # Calculate lots based on capital
         lots = self.calculate_lots(premium)

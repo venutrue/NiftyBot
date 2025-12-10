@@ -131,8 +131,8 @@ MAX_CONSECUTIVE_LOSSES = 2            # Stop after 2 consecutive losses
 MAX_WEEKLY_LOSS = 40000               # Rs. 40K max weekly loss
 
 # Stop loss percentages (on premium)
-INITIAL_SL_PERCENT = 20               # 20% initial stop loss
-BREAKEVEN_TRIGGER_PERCENT = 20        # Move SL to entry at +20% profit
+INITIAL_SL_PERCENT = 15               # 15% initial stop loss (tighter for intraday)
+BREAKEVEN_TRIGGER_PERCENT = 12        # Move SL to entry at +12% profit (realistic for intraday options)
 TRAIL_PERCENT = 50                    # Trail at 50% of max profit
 
 ##############################################
