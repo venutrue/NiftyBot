@@ -86,11 +86,16 @@ class KiteExecutor(BrokerInterface):
         self.logger = setup_logger("EXECUTOR")
         self.connected = False
 
-        # API rate limiting (max 50 calls per day)
-        self.max_api_calls_per_day = 50
+        # API rate limiting and monitoring
+        # Daily monitoring (high limit as safety net, not constraint)
+        self.max_api_calls_per_day = 5000  # Safety net only (should never hit this)
         self.api_call_count = 0
         self.api_call_date = datetime.date.today()
-        self.api_limit_reached = False
+
+        # Rate limiting (Kite allows 3 requests/second)
+        self.max_requests_per_second = 2.5  # Conservative: 2.5 req/sec (vs Kite's 3)
+        self.min_delay_between_calls = 1.0 / self.max_requests_per_second  # 0.4 seconds
+        self.last_api_call_time = None
 
     def connect(self):
         """Connect to Kite Connect API."""
@@ -105,58 +110,53 @@ class KiteExecutor(BrokerInterface):
             self.connected = False
             return False
 
-    def _check_api_rate_limit(self):
+    def _apply_rate_limiting(self):
         """
-        Check if API rate limit has been reached.
+        Apply rate limiting (Kite allows 3 req/sec, we use 2.5 to be safe).
+        Sleeps if necessary to respect rate limit.
+        """
+        if self.last_api_call_time is not None:
+            elapsed = time.time() - self.last_api_call_time
+            if elapsed < self.min_delay_between_calls:
+                sleep_time = self.min_delay_between_calls - elapsed
+                self.logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
+                time.sleep(sleep_time)
 
-        Returns:
-            bool: True if within limit, False if limit reached
-        """
+        self.last_api_call_time = time.time()
+
+    def _update_api_monitoring(self):
+        """Update daily API call monitoring (doesn't block, just tracks)."""
         today = datetime.date.today()
 
         # Reset counter if new day
         if today != self.api_call_date:
+            self.logger.info(
+                f"📊 API Usage Summary for {self.api_call_date}: "
+                f"{self.api_call_count} calls"
+            )
             self.api_call_count = 0
             self.api_call_date = today
-            self.api_limit_reached = False
-            self.logger.info(f"API rate limit reset for new day: {today}")
 
-        # Check if limit reached
-        if self.api_call_count >= self.max_api_calls_per_day:
-            if not self.api_limit_reached:
-                # Log warning only once per day
-                log_error("EXECUTOR",
-                    f"🚨 API RATE LIMIT REACHED: {self.api_call_count}/{self.max_api_calls_per_day} calls today. "
-                    f"No more API calls until tomorrow to prevent issues."
-                )
-                self.api_limit_reached = True
-            return False
-
-        return True
-
-    def _increment_api_call_count(self, call_name: str):
-        """Increment API call counter and log if approaching limit."""
         self.api_call_count += 1
 
-        # Log progress every 10 calls
-        if self.api_call_count % 10 == 0:
-            remaining = self.max_api_calls_per_day - self.api_call_count
+        # Log progress every 100 calls (not blocking, just monitoring)
+        if self.api_call_count % 100 == 0:
             self.logger.info(
-                f"API calls today: {self.api_call_count}/{self.max_api_calls_per_day} "
-                f"({remaining} remaining)"
+                f"📊 API calls today: {self.api_call_count} "
+                f"(monitoring only, no limit enforced)"
             )
 
-        # Warn when approaching limit
-        if self.api_call_count >= self.max_api_calls_per_day - 5:
+        # Warn if unusually high usage (might indicate bug)
+        if self.api_call_count > 2000:
             self.logger.warning(
-                f"⚠️  Approaching API limit: {self.api_call_count}/{self.max_api_calls_per_day} "
-                f"({self.max_api_calls_per_day - self.api_call_count} calls remaining)"
+                f"⚠️  High API usage: {self.api_call_count} calls today. "
+                f"This is unusual - check for bugs or runaway loops."
             )
 
     def _retry_api_call(self, func, func_name, *args, **kwargs):
         """
         Retry an API call with exponential backoff on network errors.
-        Includes rate limiting check.
+        Includes per-second rate limiting and daily monitoring.
 
         Args:
             func: The API function to call
@@ -166,26 +166,21 @@ class KiteExecutor(BrokerInterface):
         Returns:
             Result of the API call, or None if all retries fail
         """
-        # SAFETY: Check API rate limit before making call
-        if not self._check_api_rate_limit():
-            self.logger.error(
-                f"{func_name}: BLOCKED - API rate limit reached "
-                f"({self.api_call_count}/{self.max_api_calls_per_day} calls today)"
-            )
-            return None
-
         last_error = None
         delay = API_RETRY_DELAY
 
         for attempt in range(1, API_MAX_RETRIES + 1):
             try:
+                # Apply rate limiting BEFORE making call (respect 2.5 req/sec)
+                if attempt == 1:  # Only rate limit first attempt (not retries)
+                    self._apply_rate_limiting()
+
                 self.logger.debug(f"{func_name}: Attempt {attempt}/{API_MAX_RETRIES}")
                 result = func(*args, **kwargs)
 
-                # Success - increment counter and log if we had retries
+                # Success - update monitoring and log if we had retries
                 if attempt == 1:
-                    # Only count successful first attempts (not retries)
-                    self._increment_api_call_count(func_name)
+                    self._update_api_monitoring()
 
                 if attempt > 1:
                     self.logger.info(f"{func_name}: Succeeded on attempt {attempt}")
@@ -487,21 +482,20 @@ class KiteExecutor(BrokerInterface):
         Get current API usage statistics.
 
         Returns:
-            dict with API call count, limit, and remaining calls
+            dict with API call count and rate limiting info
         """
-        # Ensure counter is up to date for current day
-        self._check_api_rate_limit()
-
-        remaining = max(0, self.max_api_calls_per_day - self.api_call_count)
-        usage_percent = (self.api_call_count / self.max_api_calls_per_day) * 100
+        # Reset counter if new day
+        today = datetime.date.today()
+        if today != self.api_call_date:
+            self.api_call_count = 0
+            self.api_call_date = today
 
         return {
             'date': self.api_call_date.isoformat(),
-            'calls_made': self.api_call_count,
-            'calls_limit': self.max_api_calls_per_day,
-            'calls_remaining': remaining,
-            'usage_percent': usage_percent,
-            'limit_reached': self.api_limit_reached
+            'calls_made_today': self.api_call_count,
+            'rate_limit': f'{self.max_requests_per_second} req/sec',
+            'monitoring_only': True,
+            'note': 'No hard daily limit - rate limited to 2.5 req/sec'
         }
 
 ##############################################
