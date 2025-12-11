@@ -73,8 +73,11 @@ class StrategyConfig:
     # EXIT CONDITIONS
     # ========================================
 
+    # Stop loss method
+    stop_loss_method: str = "fixed"         # "fixed" (percentage) or "technical" (option candle structure)
+
     # Stop loss and target
-    stop_loss_percent: float = 0.20         # 20% stop loss from entry
+    stop_loss_percent: float = 0.20         # 20% stop loss from entry (used when stop_loss_method="fixed")
     target_percent: float = 0.40            # 40% target from entry (2:1 R:R)
 
     # Trailing stop
