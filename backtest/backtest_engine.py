@@ -32,6 +32,7 @@ from common.indicators import (
     get_atm_strike
 )
 from common.logger import setup_logger
+from common.technical_sl import calculate_entry_stop_loss
 from executor.trade_executor import KiteExecutor
 
 
@@ -409,7 +410,14 @@ class BacktestEngine:
         self.logger.info(f"Period: {self.config.start_date.date()} to {self.config.end_date.date()}")
         self.logger.info(f"Initial Capital: ₹{self.config.initial_capital:,.0f}")
         self.logger.info(f"Max Risk/Trade: {self.config.max_risk_per_trade*100:.1f}%")
-        self.logger.info(f"Stop Loss: {self.config.stop_loss_percent*100:.0f}%")
+
+        # Display SL method
+        sl_method = self.config.strategy.stop_loss_method
+        if sl_method == "technical":
+            self.logger.info(f"Stop Loss: Technical (option candle structure, capped 10-20%)")
+        else:
+            self.logger.info(f"Stop Loss: Fixed {self.config.stop_loss_percent*100:.0f}%")
+
         self.logger.info("=" * 80)
 
         # Connect to Kite
@@ -755,8 +763,40 @@ class BacktestEngine:
             # Calculate position size
             quantity = self.calculate_position_size(entry_price)
 
-            # Calculate stop loss and target
-            stop_loss = entry_price * (1 - self.config.stop_loss_percent)
+            # Calculate stop loss based on configured method
+            if self.config.strategy.stop_loss_method == "technical":
+                # Technical SL: Use option premium candle structure
+                # Get last 2 candles from option_data for technical SL calculation
+                if len(option_data) >= 2:
+                    option_candles = option_data.tail(2).to_dict('records')
+
+                    # Convert to simple dict format expected by technical_sl function
+                    candles_for_sl = [
+                        {'high': c['high'], 'low': c['low'], 'close': c['close']}
+                        for c in option_candles
+                    ]
+
+                    # Call technical SL calculator
+                    stop_loss, sl_pct, reason = calculate_entry_stop_loss(
+                        entry_premium=entry_price,
+                        option_candles=candles_for_sl,
+                        option_type=option_type
+                    )
+
+                    self.logger.debug(
+                        f"Technical SL: ₹{stop_loss:.2f} ({sl_pct:.1%}) - {reason}"
+                    )
+                else:
+                    # Fallback to fixed SL if not enough candles
+                    stop_loss = entry_price * (1 - self.config.stop_loss_percent)
+                    self.logger.warning(
+                        f"Insufficient candles for technical SL, using fixed {self.config.stop_loss_percent:.1%}"
+                    )
+            else:
+                # Fixed percentage SL (default)
+                stop_loss = entry_price * (1 - self.config.stop_loss_percent)
+
+            # Target remains percentage-based
             target = entry_price * (1 + self.config.target_percent)
 
             # Create trade

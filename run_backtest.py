@@ -86,6 +86,14 @@ def parse_args():
     )
 
     parser.add_argument(
+        '--sl-method',
+        type=str,
+        choices=['fixed', 'technical'],
+        default='fixed',
+        help='Stop loss method: "fixed" (percentage) or "technical" (option candle structure)'
+    )
+
+    parser.add_argument(
         '--max-positions',
         type=int,
         default=3,
@@ -154,6 +162,7 @@ def main():
         strategy_config.initial_capital = args.capital
         strategy_config.max_risk_per_trade = args.risk
         strategy_config.stop_loss_percent = args.stop_loss
+        strategy_config.stop_loss_method = args.sl_method
         strategy_config.max_positions = args.max_positions
         print(f"\n📝 Using CUSTOM strategy with CLI parameters")
     else:
@@ -166,6 +175,8 @@ def main():
             strategy_config.max_risk_per_trade = args.risk
         if args.stop_loss != 0.20:
             strategy_config.stop_loss_percent = args.stop_loss
+        if args.sl_method != 'fixed':
+            strategy_config.stop_loss_method = args.sl_method
         if args.max_positions != 3:
             strategy_config.max_positions = args.max_positions
         print(f"\n📝 Using '{args.strategy.upper()}' strategy preset")
@@ -185,7 +196,11 @@ def main():
     print(f"  Max Daily Loss: {config.max_daily_loss * 100:.1f}%")
     print(f"  Max Capital Deployed: {config.max_capital_deployed * 100:.0f}%")
     print(f"\nPOSITION MANAGEMENT:")
-    print(f"  Stop Loss: {config.stop_loss_percent * 100:.0f}%")
+    sl_method = config.strategy.stop_loss_method
+    if sl_method == "technical":
+        print(f"  Stop Loss: Technical (option candle structure, capped 10-20%)")
+    else:
+        print(f"  Stop Loss: Fixed {config.stop_loss_percent * 100:.0f}%")
     print(f"  Target: {config.target_percent * 100:.0f}%")
     print(f"  Max Positions: {config.max_positions}")
     print(f"  Trailing Stop: {'Enabled' if config.strategy.enable_trailing_stop else 'Disabled'}")
