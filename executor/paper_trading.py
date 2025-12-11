@@ -348,11 +348,21 @@ class PaperTradingEngine:
 
                 # Restore open trades
                 for trade_data in session_data.get('open_trades', []):
+                    # Convert timestamp strings back to datetime objects
+                    if isinstance(trade_data.get('timestamp'), str):
+                        trade_data['timestamp'] = datetime.datetime.fromisoformat(trade_data['timestamp'])
+                    if trade_data.get('exit_time') and isinstance(trade_data['exit_time'], str):
+                        trade_data['exit_time'] = datetime.datetime.fromisoformat(trade_data['exit_time'])
                     trade = PaperTrade(**trade_data)
                     self.open_trades[trade.symbol] = trade
 
                 # Restore closed trades
                 for trade_data in session_data.get('closed_trades', []):
+                    # Convert timestamp strings back to datetime objects
+                    if isinstance(trade_data.get('timestamp'), str):
+                        trade_data['timestamp'] = datetime.datetime.fromisoformat(trade_data['timestamp'])
+                    if trade_data.get('exit_time') and isinstance(trade_data['exit_time'], str):
+                        trade_data['exit_time'] = datetime.datetime.fromisoformat(trade_data['exit_time'])
                     self.closed_trades.append(PaperTrade(**trade_data))
 
                 self.logger.info(f"Paper trading session restored from {session_date}")
