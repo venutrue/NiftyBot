@@ -238,50 +238,54 @@ class BankNiftyBot:
 
     def get_option_symbol(self, strike, option_type):
         """
-        Build BANKNIFTY option symbol in Kite/NSE format for WEEKLY options.
+        Get BANKNIFTY option symbol by looking up from actual instruments.
 
-        Weekly format: BANKNIFTY + YY + M + DD + STRIKE + CE/PE
-        Where M is single character: 1-9 for Jan-Sep, O for Oct, N for Nov, D for Dec
+        This handles both weekly and monthly expiries correctly by querying
+        the actual tradingsymbol from the instruments list instead of
+        constructing it.
 
-        Example: BANKNIFTY25D3059000PE = BANKNIFTY Dec 30, 2025, 59000 PE
+        Args:
+            strike: Strike price
+            option_type: 'CE' or 'PE'
 
-        Note: Monthly options use format BANKNIFTY25DEC59000PE (no day), but we trade weeklies.
+        Returns:
+            Trading symbol string, or None if not found
         """
         expiry_date = self.get_weekly_expiry()
         if not expiry_date:
             self.logger.error("Could not determine expiry date")
             return None
 
-        # NSE weekly options use single-character month codes
-        month_codes = {
-            1: '1',   # January
-            2: '2',   # February
-            3: '3',   # March
-            4: '4',   # April
-            5: '5',   # May
-            6: '6',   # June
-            7: '7',   # July
-            8: '8',   # August
-            9: '9',   # September
-            10: 'O',  # October (capital O)
-            11: 'N',  # November
-            12: 'D'   # December
-        }
+        # Load instruments
+        instruments = self._load_nfo_instruments()
+        if not instruments:
+            self.logger.error("No instruments loaded")
+            return None
 
-        year = expiry_date.strftime("%y")
-        month_code = month_codes[expiry_date.month]
-        day = expiry_date.strftime("%d")  # Two-digit day (01-31)
+        # Find the option in instruments by matching expiry, strike, and type
+        for inst in instruments:
+            if (inst['name'] == 'BANKNIFTY' and
+                inst['instrument_type'] == option_type and
+                inst['expiry'] == expiry_date and
+                inst['strike'] == strike):
 
-        # Weekly format includes day: BANKNIFTY + YY + M + DD + STRIKE + CE/PE
-        symbol = f"BANKNIFTY{year}{month_code}{day}{int(strike)}{option_type}"
+                symbol = inst['tradingsymbol']
 
-        # Log expiry date for verification (only log once per session)
-        if not hasattr(self, '_expiry_logged') or not self._expiry_logged:
-            self.logger.info(f"Trading expiry: {expiry_date.strftime('%Y-%m-%d')} ({expiry_date.strftime('%A')})")
-            self.logger.info(f"Option symbol format: BANKNIFTY{year}{month_code}{day}XXXXX{option_type} (weekly)")
-            self._expiry_logged = True
+                # Log expiry date for verification (only log once per session)
+                if not hasattr(self, '_expiry_logged') or not self._expiry_logged:
+                    # Determine if weekly or monthly based on symbol format
+                    expiry_type = "weekly" if len(symbol.replace('BANKNIFTY', '').split(option_type)[0]) <= 5 else "monthly"
+                    self.logger.info(f"Trading expiry: {expiry_date.strftime('%Y-%m-%d')} ({expiry_date.strftime('%A')})")
+                    self.logger.info(f"Option symbol format: {symbol.replace(str(int(strike)), 'XXXXX')} ({expiry_type})")
+                    self._expiry_logged = True
 
-        return symbol
+                return symbol
+
+        # Symbol not found
+        self.logger.error(
+            f"Could not find BANKNIFTY option: expiry={expiry_date}, strike={strike}, type={option_type}"
+        )
+        return None
 
     def calculate_lots(self, premium):
         """
