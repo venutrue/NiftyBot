@@ -253,7 +253,11 @@ class BacktestEngine:
 
     def _get_option_symbol(self, strike, option_type, reference_date):
         """
-        Build NIFTY option symbol in Kite/NSE format for WEEKLY options.
+        Get NIFTY option symbol by looking up from actual instruments.
+
+        This handles both weekly and monthly expiries correctly by querying
+        the actual tradingsymbol from the instruments list instead of
+        constructing it.
 
         Args:
             strike: Strike price
@@ -278,20 +282,25 @@ class BacktestEngine:
             self._current_expiry = expiry_date
             self.logger.info(f"Trading expiry updated: {expiry_date.strftime('%Y-%m-%d')} ({expiry_date.strftime('%A')})")
 
-        # NSE weekly options use single-character month codes
-        month_codes = {
-            1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6',
-            7: '7', 8: '8', 9: '9', 10: 'O', 11: 'N', 12: 'D'
-        }
+        # Load instruments
+        instruments = self._load_nfo_instruments()
+        if not instruments:
+            self.logger.error("No instruments loaded")
+            return None
 
-        year = expiry_date.strftime("%y")
-        month_code = month_codes[expiry_date.month]
-        day = expiry_date.strftime("%d")
+        # Find the option in instruments by matching expiry, strike, and type
+        for inst in instruments:
+            if (inst['name'] == 'NIFTY' and
+                inst['instrument_type'] == option_type and
+                inst['expiry'] == expiry_date and
+                inst['strike'] == strike):
+                return inst['tradingsymbol']
 
-        # Weekly format: NIFTY + YY + M + DD + STRIKE + CE/PE
-        symbol = f"NIFTY{year}{month_code}{day}{int(strike)}{option_type}"
-
-        return symbol
+        # Symbol not found - log warning but don't fail
+        self.logger.warning(
+            f"Could not find NIFTY option: expiry={expiry_date}, strike={strike}, type={option_type}"
+        )
+        return None
 
     def _fetch_option_historical_data(self, symbol, from_date, to_date):
         """
