@@ -185,8 +185,12 @@ def wait_for_market_open(bots=None):
             logger.info(f"{market_type} market closed for today.")
             return False
 
-        # Sleep for a bit then check again
-        time.sleep(60)
+        # Interruptible sleep - check every second for shutdown signal
+        for _ in range(60):
+            if not running:
+                logger.info("Shutdown requested while waiting for market open")
+                return False
+            time.sleep(1)
 
     return running
 
@@ -289,8 +293,13 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
         except Exception as e:
             logger.error(f"Error in trading loop: {str(e)}")
 
-        # Sleep until next scan
-        time.sleep(interval)
+        # Interruptible sleep - check 'running' flag every second
+        # This allows instant Ctrl+C response instead of waiting for full interval
+        for _ in range(interval):
+            if not running:
+                logger.info("Shutdown requested during sleep interval")
+                break
+            time.sleep(1)
 
     # End of day summary
     log_daily_summary(total_trades, total_winners, total_losers, total_pnl)
