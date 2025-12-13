@@ -35,6 +35,7 @@ from common.indicators import (
     supertrend, is_supertrend_bullish, is_supertrend_bearish,
     get_atm_strike
 )
+from executor.trade_journal import get_journal
 
 ##############################################
 # NIFTYBOT CLASS
@@ -61,6 +62,11 @@ class NiftyBot:
         self.name = "NIFTYBOT"
         self.executor = executor
         self.logger = setup_logger(self.name)
+
+        # Trade journal - Excel export for easy review
+        # Determines mode from executor type
+        mode = 'PAPER' if hasattr(executor, 'paper_engine') else 'LIVE'
+        self.journal = get_journal(mode=mode)
 
         # State tracking
         self.trade_count = 0
@@ -1049,6 +1055,7 @@ class NiftyBot:
         if action == TRANSACTION_BUY:
             entry_spot = kwargs.get('entry_spot', 0)
             initial_sl = kwargs.get('initial_sl', price * 0.8)
+            entry_reason = kwargs.get('reason', 'Manual entry')
 
             self.trade_count += 1
             self.active_positions[symbol] = {
@@ -1058,7 +1065,8 @@ class NiftyBot:
                 'initial_sl': initial_sl,
                 'current_sl': initial_sl,
                 'quantity': quantity,
-                'entry_time': datetime.datetime.now()
+                'entry_time': datetime.datetime.now(),
+                'entry_reason': entry_reason
             }
             self.max_premium_seen[symbol] = price
 
@@ -1068,10 +1076,24 @@ class NiftyBot:
                 f"Trade #{self.trade_count}"
             )
 
+            # Log to Excel journal
+            direction = 'BUY_CE' if 'CE' in symbol else 'BUY_PE'
+            self.journal.log_entry(
+                bot_name=self.name,
+                symbol=symbol,
+                direction=direction,
+                entry_price=price,
+                quantity=quantity,
+                entry_reason=entry_reason,
+                stop_loss=initial_sl,
+                spot_price=entry_spot
+            )
+
         elif action == TRANSACTION_SELL:
             if symbol in self.active_positions:
                 entry = self.active_positions[symbol]['entry_premium']
                 pnl = (price - entry) * quantity
+                exit_reason = kwargs.get('reason', 'Manual exit')
 
                 # Update daily P&L
                 self.daily_pnl += pnl
@@ -1086,6 +1108,14 @@ class NiftyBot:
                     f"Position closed: {symbol} | "
                     f"Entry: {entry:.2f} | Exit: {price:.2f} | "
                     f"P&L: Rs. {pnl:,.2f} | Daily P&L: Rs. {self.daily_pnl:,.2f}"
+                )
+
+                # Log to Excel journal
+                self.journal.log_exit(
+                    symbol=symbol,
+                    exit_price=price,
+                    exit_reason=exit_reason,
+                    pnl=pnl
                 )
 
                 del self.active_positions[symbol]
