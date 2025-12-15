@@ -37,10 +37,12 @@ class TradeJournal:
         """
         self.logger = setup_logger("JOURNAL")
         self.mode = mode
-        
+
         # Create trades directory if it doesn't exist
-        self.trades_dir = Path('/home/user/NiftyBot/trades')
-        self.trades_dir.mkdir(exist_ok=True)
+        # Get project root dynamically (go up from executor/ to project root)
+        project_root = Path(__file__).parent.parent
+        self.trades_dir = project_root / 'trades'
+        self.trades_dir.mkdir(exist_ok=True, parents=True)
         
         # Generate filename with current month
         current_month = datetime.datetime.now().strftime('%Y-%m')
