@@ -135,6 +135,17 @@ INITIAL_SL_PERCENT = 15               # 15% initial stop loss (widened from 10% 
 BREAKEVEN_TRIGGER_PERCENT = 5         # Move SL to entry at +5% profit (realistic for intraday)
 TRAIL_PERCENT = 50                    # Trail at 50% of max profit (legacy - used by 'percent' method)
 
+##############################################
+# HIDDEN STOP LOSS (Anti Stop-Hunting)
+##############################################
+# Instead of exiting on LTP touching SL, wait for CANDLE CLOSE below SL
+# This prevents stop-hunting via intraday wicks
+
+HIDDEN_SL_ENABLED = True              # Enable hidden SL with candle close confirmation
+HIDDEN_SL_METHOD = 'technical'        # 'technical' (candle structure) or 'fixed' (percentage)
+EMERGENCY_SL_PERCENT = 40             # Emergency exit if LTP drops 40%+ (no candle close wait)
+SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5minute recommended)
+
 # Ultra-aggressive trailing parameters (NEW!)
 TRAIL_FREQUENCY = 3                   # Trail stop loss every 3% gain
 TRAIL_INCREMENT = 2                   # Lock 2% profit with each trail step
