@@ -143,7 +143,7 @@ TRAIL_PERCENT = 50                    # Trail at 50% of max profit (legacy - use
 
 HIDDEN_SL_ENABLED = True              # Enable hidden SL with candle close confirmation
 HIDDEN_SL_METHOD = 'technical'        # 'technical' (candle structure) or 'fixed' (percentage)
-EMERGENCY_SL_PERCENT = 40             # Emergency exit if LTP drops 40%+ (no candle close wait)
+EMERGENCY_SL_PERCENT = 25             # Emergency exit if LTP drops 25%+ (no candle close wait)
 SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5minute recommended)
 
 # Ultra-aggressive trailing parameters (NEW!)
