@@ -29,7 +29,9 @@ from common.config import (
     LAST_ENTRY_HOUR, LAST_ENTRY_MINUTE,
     FORCE_EXIT_HOUR, FORCE_EXIT_MINUTE,
     # Hidden Stop Loss (Anti Stop-Hunting)
-    HIDDEN_SL_ENABLED, HIDDEN_SL_METHOD, EMERGENCY_SL_PERCENT, SL_CANDLE_INTERVAL
+    HIDDEN_SL_ENABLED, HIDDEN_SL_METHOD, EMERGENCY_SL_PERCENT, SL_CANDLE_INTERVAL,
+    # Market Regime Filter (Weekly + Daily -> VWAP Matrix)
+    MARKET_REGIME_ENABLED, MIN_TRADE_QUALITY_SCORE, ENFORCE_DIRECTION_FILTER
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
@@ -38,6 +40,7 @@ from common.indicators import (
     supertrend, is_supertrend_bullish, is_supertrend_bearish,
     get_atm_strike
 )
+from common.market_regime import MarketRegimeAnalyzer, VWAPStrategy
 from executor.trade_journal import get_journal
 
 ##############################################
@@ -86,6 +89,11 @@ class NiftyBot:
         self.previous_close = None
         self.trading_delay_until = None  # Datetime when trading can start
 
+        # Market regime analyzer (Weekly + Daily -> VWAP Matrix)
+        self.regime_analyzer = MarketRegimeAnalyzer(executor) if MARKET_REGIME_ENABLED else None
+        self.current_regime = None  # Cached regime for the day
+        self._regime_analyzed = False  # Flag to run analysis once per day
+
         # Instrument cache (avoid repeated API calls)
         self._nfo_instruments = None
         self._instruments_loaded = False
@@ -103,6 +111,10 @@ class NiftyBot:
         self.gap_percentage = 0.0
         self.previous_close = None
         self.trading_delay_until = None
+
+        # Reset market regime analysis (will be recalculated at market open)
+        self.current_regime = None
+        self._regime_analyzed = False
 
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
@@ -849,6 +861,13 @@ class NiftyBot:
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
 
+        # ============================================
+        # MARKET REGIME ANALYSIS (Pre-Market Checklist)
+        # Weekly sets battlefield, Daily sets rules, VWAP executes
+        # ============================================
+        if MARKET_REGIME_ENABLED and not self._regime_analyzed:
+            self._analyze_market_regime()
+
         # Check exits first (always check exits)
         exit_signals = self._check_exits(df)
         signals.extend(exit_signals)
@@ -857,15 +876,99 @@ class NiftyBot:
         if not self._can_enter_new_trade(now):
             return signals
 
+        # ============================================
+        # REGIME FILTER: Skip if market conditions don't align
+        # This eliminates 50-60% of bad trades
+        # ============================================
+        if MARKET_REGIME_ENABLED and self.current_regime:
+            if not self.current_regime.should_trade:
+                # Log skip reason periodically (not every scan)
+                if not hasattr(self, '_last_regime_skip_log') or \
+                   (now - self._last_regime_skip_log).total_seconds() > 300:  # Every 5 min
+                    self.logger.info(
+                        f"REGIME FILTER: Skipping trades | "
+                        f"Reason: {self.current_regime.skip_reason}"
+                    )
+                    self._last_regime_skip_log = now
+                return signals
+
+            # Check minimum quality score
+            if self.current_regime.trade_quality_score < MIN_TRADE_QUALITY_SCORE:
+                if not hasattr(self, '_last_quality_skip_log') or \
+                   (now - self._last_quality_skip_log).total_seconds() > 300:
+                    self.logger.info(
+                        f"REGIME FILTER: Quality score too low | "
+                        f"Score: {self.current_regime.trade_quality_score} < {MIN_TRADE_QUALITY_SCORE}"
+                    )
+                    self._last_quality_skip_log = now
+                return signals
+
         # Check entry conditions
         signal_type = self.check_entry_conditions(df)
 
         if signal_type:
+            # ============================================
+            # DIRECTION FILTER: Only trade in allowed direction
+            # ============================================
+            if MARKET_REGIME_ENABLED and ENFORCE_DIRECTION_FILTER and self.current_regime:
+                should_trade, reason = self.regime_analyzer.should_trade_signal(
+                    self.current_regime, signal_type
+                )
+                if not should_trade:
+                    self.logger.info(
+                        f"DIRECTION FILTER: Blocking {signal_type} | Reason: {reason}"
+                    )
+                    return signals
+
             signal = self._create_entry_signal(df, signal_type)
             if signal:
+                # Add regime info to signal for logging
+                if self.current_regime:
+                    signal['regime_strategy'] = self.current_regime.vwap_strategy.value
+                    signal['regime_quality'] = self.current_regime.trade_quality_score
                 signals.append(signal)
 
         return signals
+
+    def _analyze_market_regime(self):
+        """
+        Perform market regime analysis (pre-market checklist).
+
+        This should run once at market open and cache the result.
+        Mental model:
+          - Weekly sets the battlefield
+          - Daily sets the rules
+          - VWAP executes the trade
+        """
+        if self.regime_analyzer is None:
+            return
+
+        try:
+            self.logger.info("-" * 60)
+            self.logger.info("Running Pre-Market Checklist...")
+            self.logger.info("-" * 60)
+
+            self.current_regime = self.regime_analyzer.analyze(NIFTY_50_TOKEN)
+            self._regime_analyzed = True
+
+            # Log summary
+            if self.current_regime.should_trade:
+                self.logger.info(
+                    f"REGIME DECISION: TRADE ALLOWED | "
+                    f"Strategy: {self.current_regime.vwap_strategy.value} | "
+                    f"Quality: {self.current_regime.trade_quality_score}/100"
+                )
+            else:
+                self.logger.warning(
+                    f"REGIME DECISION: NO TRADE TODAY | "
+                    f"Reason: {self.current_regime.skip_reason}"
+                )
+
+        except Exception as e:
+            self.logger.error(f"Market regime analysis failed: {str(e)}")
+            # On failure, allow trading with caution
+            self._regime_analyzed = True
+            self.current_regime = None
 
     def _can_enter_new_trade(self, now):
         """Check if we can enter a new trade."""
@@ -1269,7 +1372,7 @@ class NiftyBot:
 
     def get_status(self):
         """Get current bot status."""
-        return {
+        status = {
             'name': self.name,
             'trade_count': self.trade_count,
             'max_trades': NIFTY_MAX_TRADES_PER_DAY,
@@ -1278,3 +1381,18 @@ class NiftyBot:
             'active_positions': len(self.active_positions),
             'positions': list(self.active_positions.keys())
         }
+
+        # Add market regime info if available
+        if MARKET_REGIME_ENABLED and self.current_regime:
+            status['regime'] = {
+                'weekly_trend': self.current_regime.weekly_trend.value,
+                'daily_pattern': self.current_regime.daily_pattern.value,
+                'vwap_strategy': self.current_regime.vwap_strategy.value,
+                'quality_score': self.current_regime.trade_quality_score,
+                'should_trade': self.current_regime.should_trade,
+                'is_event_day': self.current_regime.is_event_day
+            }
+            if not self.current_regime.should_trade:
+                status['regime']['skip_reason'] = self.current_regime.skip_reason
+
+        return status
