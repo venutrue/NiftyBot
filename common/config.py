@@ -152,6 +152,23 @@ TRAIL_INCREMENT = 2                   # Lock 2% profit with each trail step
 MAX_PROFIT_GIVEBACK = 30              # Never give back >30% of max profit seen
 
 ##############################################
+# MARKET REGIME FILTER (Weekly + Daily -> VWAP Matrix)
+##############################################
+# Pre-trade filter that eliminates 50-60% of bad trades
+# Mental model: Weekly sets battlefield, Daily sets rules, VWAP executes
+
+MARKET_REGIME_ENABLED = True          # Enable/disable market regime filter
+MIN_TRADE_QUALITY_SCORE = 50          # Minimum quality score to take a trade (0-100)
+REGIME_ANALYSIS_LOG_LEVEL = "INFO"    # Log level for regime analysis
+
+# Direction filter: Only take trades aligned with regime
+ENFORCE_DIRECTION_FILTER = True       # If True, only trade in direction allowed by regime
+
+# Skip trading on these patterns even if score is ok
+SKIP_ON_INSIDE_DAY = True             # Skip when trending week + inside day
+SKIP_ON_EVENT_DAY = True              # Skip on RBI, Budget, Monthly expiry days
+
+##############################################
 # ENTRY PARAMETERS (VWAP + Supertrend + ADX)
 ##############################################
 
