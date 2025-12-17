@@ -134,6 +134,11 @@ class MarketRegimeAnalyzer:
         self.logger.info("MARKET REGIME ANALYSIS - Pre-Market Checklist")
         self.logger.info("=" * 60)
 
+        # Check if executor is connected (for live trading)
+        if hasattr(self.executor, 'connected') and not self.executor.connected:
+            self.logger.warning("Executor not connected - skipping regime analysis")
+            return self._create_unknown_regime(now, "Executor not connected")
+
         # Step 1: Weekly trend analysis
         weekly_trend = self._analyze_weekly_trend(nifty_token)
         self.logger.info(f"1. Weekly Trend: {weekly_trend.value.upper()}")
@@ -141,6 +146,11 @@ class MarketRegimeAnalyzer:
         # Step 2: Daily pattern analysis (yesterday's candle)
         daily_pattern = self._analyze_daily_pattern(nifty_token)
         self.logger.info(f"2. Yesterday's Pattern: {daily_pattern.value.upper()}")
+
+        # If both are unknown, we can't analyze regime properly
+        if weekly_trend == WeeklyTrend.UNKNOWN and daily_pattern == DailyPattern.UNKNOWN:
+            self.logger.warning("Insufficient data for regime analysis - allowing trades with caution")
+            return self._create_unknown_regime(now, "Historical data unavailable")
 
         # Step 3: Event day check
         is_event_day, event_desc = self._check_event_day(today)
@@ -179,6 +189,24 @@ class MarketRegimeAnalyzer:
 
         return regime
 
+    def _create_unknown_regime(self, now: datetime.datetime, reason: str) -> MarketRegime:
+        """Create a regime object when analysis isn't possible."""
+        regime = MarketRegime(
+            weekly_trend=WeeklyTrend.UNKNOWN,
+            daily_pattern=DailyPattern.UNKNOWN,
+            is_event_day=False,
+            event_description="",
+            vwap_strategy=VWAPStrategy.SKIP,
+            trade_quality_score=0,
+            should_trade=True,  # Allow trading but with caution
+            skip_reason=reason,
+            analysis_time=now
+        )
+        # Cache it to avoid repeated analysis attempts
+        self._regime_cache = regime
+        self._regime_cache_time = now
+        return regime
+
     def _analyze_weekly_trend(self, nifty_token: int) -> WeeklyTrend:
         """
         Analyze weekly trend using price vs weekly VWAP and structure.
@@ -199,7 +227,7 @@ class MarketRegimeAnalyzer:
             )
 
             if not data or len(data) < 5:
-                self.logger.warning("Insufficient weekly data for trend analysis")
+                self.logger.debug("Insufficient weekly data for trend analysis")
                 return WeeklyTrend.UNKNOWN
 
             df = pd.DataFrame(data)
@@ -271,7 +299,7 @@ class MarketRegimeAnalyzer:
             )
 
             if not data or len(data) < 5:
-                self.logger.warning("Insufficient daily data for pattern analysis")
+                self.logger.debug("Insufficient daily data for pattern analysis")
                 return DailyPattern.UNKNOWN
 
             df = pd.DataFrame(data)
