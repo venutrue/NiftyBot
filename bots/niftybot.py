@@ -31,7 +31,13 @@ from common.config import (
     # Hidden Stop Loss (Anti Stop-Hunting)
     HIDDEN_SL_ENABLED, HIDDEN_SL_METHOD, EMERGENCY_SL_PERCENT, SL_CANDLE_INTERVAL,
     # Market Regime Filter (Weekly + Daily -> VWAP Matrix)
-    MARKET_REGIME_ENABLED, MIN_TRADE_QUALITY_SCORE, ENFORCE_DIRECTION_FILTER
+    MARKET_REGIME_ENABLED, MIN_TRADE_QUALITY_SCORE, ENFORCE_DIRECTION_FILTER,
+    # Trend-Aware Trailing Stop Loss
+    TREND_AWARE_TRAILING_ENABLED, STRONG_TREND_ADX, WEAK_TREND_ADX,
+    STRONG_TREND_BREAKEVEN_PERCENT, STRONG_TREND_TRAIL_FREQUENCY,
+    STRONG_TREND_TRAIL_INCREMENT, STRONG_TREND_MAX_GIVEBACK, STRONG_TREND_EXIT_ON_ST_FLIP,
+    WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
+    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
@@ -1154,17 +1160,53 @@ class NiftyBot:
                     exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing (when in profit)
-            # Only run trailing logic if no exit triggered yet and we're in profit
-            if exit_reason is None and profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
+            # Only run trailing logic if no exit triggered yet
 
-                if TRAILING_STOP_METHOD == 'dynamic':
+            if exit_reason is None and TRAILING_STOP_METHOD == 'dynamic':
+                # ============================================
+                # TREND-AWARE TRAILING STOP LOSS
+                # ============================================
+                # Adapts trailing behavior based on ADX (trend strength)
+                # Strong trends: Let profits run with wider trailing
+                # Weak trends: Lock profits quickly with tight trailing
+
+                # Get current ADX from the dataframe
+                current_adx = df['adx'].iloc[-1] if 'adx' in df.columns else 25
+
+                # Determine trailing parameters based on trend strength
+                if TREND_AWARE_TRAILING_ENABLED and current_adx >= STRONG_TREND_ADX:
+                    # STRONG TREND: Wide trailing to let profits run
+                    breakeven_trigger = STRONG_TREND_BREAKEVEN_PERCENT
+                    trail_frequency = STRONG_TREND_TRAIL_FREQUENCY
+                    trail_increment = STRONG_TREND_TRAIL_INCREMENT
+                    max_giveback = STRONG_TREND_MAX_GIVEBACK
+                    trend_mode = "STRONG"
+                    check_st_flip = STRONG_TREND_EXIT_ON_ST_FLIP
+                elif TREND_AWARE_TRAILING_ENABLED and current_adx <= WEAK_TREND_ADX:
+                    # WEAK/RANGING: Tight trailing to lock profits
+                    breakeven_trigger = WEAK_TREND_BREAKEVEN_PERCENT
+                    trail_frequency = WEAK_TREND_TRAIL_FREQUENCY
+                    trail_increment = WEAK_TREND_TRAIL_INCREMENT
+                    max_giveback = WEAK_TREND_MAX_GIVEBACK
+                    trend_mode = "WEAK"
+                    check_st_flip = False
+                else:
+                    # MODERATE or trend-aware disabled: Use legacy parameters
+                    breakeven_trigger = BREAKEVEN_TRIGGER_PERCENT
+                    trail_frequency = TRAIL_FREQUENCY
+                    trail_increment = TRAIL_INCREMENT
+                    max_giveback = MAX_PROFIT_GIVEBACK
+                    trend_mode = "MODERATE"
+                    check_st_flip = False
+
+                # Check if we've hit the breakeven trigger
+                if profit_pct >= breakeven_trigger:
                     # Progressive trailing: Lock profits incrementally
                     # Calculate how many trail steps we should have taken
-                    trail_steps = int((profit_pct - BREAKEVEN_TRIGGER_PERCENT) / TRAIL_FREQUENCY)
+                    trail_steps = int((profit_pct - breakeven_trigger) / trail_frequency)
 
                     # Calculate target SL based on trail steps
-                    # Start at breakeven (BREAKEVEN_TRIGGER_PERCENT), then add increments
-                    locked_profit_pct = BREAKEVEN_TRIGGER_PERCENT + (trail_steps * TRAIL_INCREMENT)
+                    locked_profit_pct = breakeven_trigger + (trail_steps * trail_increment)
                     target_sl = entry_premium * (1 + locked_profit_pct / 100)
 
                     # Move SL up progressively
@@ -1176,13 +1218,14 @@ class NiftyBot:
                         locked_profit = ((new_sl - entry_premium) / entry_premium) * 100
                         self.logger.info(
                             f"{symbol}: Trailing SL from ₹{old_sl:.2f} → ₹{new_sl:.2f} "
-                            f"(Locked {locked_profit:.1f}% profit, Current: {profit_pct:.1f}%)"
+                            f"(Locked {locked_profit:.1f}% profit, Current: {profit_pct:.1f}%) "
+                            f"[{trend_mode} trend, ADX={current_adx:.1f}]"
                         )
 
-                    # Phase 3: Max profit protection (never give back >30% of gains)
+                    # Max profit protection (dynamic based on trend)
                     max_profit_amount = max_premium - entry_premium
-                    max_giveback = max_profit_amount * (MAX_PROFIT_GIVEBACK / 100)
-                    protection_sl = max_premium - max_giveback
+                    max_giveback_amount = max_profit_amount * (max_giveback / 100)
+                    protection_sl = max_premium - max_giveback_amount
 
                     if protection_sl > new_sl:
                         old_sl = new_sl
@@ -1190,11 +1233,20 @@ class NiftyBot:
                         position['current_sl'] = new_sl
                         self.logger.info(
                             f"{symbol}: Max profit protection SL = ₹{new_sl:.2f} "
-                            f"(Max seen: ₹{max_premium:.2f}, protecting {100-MAX_PROFIT_GIVEBACK}% of gains)"
+                            f"(Max seen: ₹{max_premium:.2f}, protecting {100-max_giveback}% of gains) "
+                            f"[{trend_mode} trend]"
                         )
 
-                elif TRAILING_STOP_METHOD == 'supertrend':
-                    # Legacy: Exit on Supertrend flip
+                    # In strong trends, also check for Supertrend flip as exit signal
+                    if check_st_flip:
+                        if is_call and is_supertrend_bearish(df):
+                            exit_reason = f"Supertrend flipped bearish in strong trend (ADX={current_adx:.1f})"
+                        elif not is_call and is_supertrend_bullish(df):
+                            exit_reason = f"Supertrend flipped bullish in strong trend (ADX={current_adx:.1f})"
+
+            elif exit_reason is None and TRAILING_STOP_METHOD == 'supertrend':
+                # Legacy: Exit on Supertrend flip
+                if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
                         new_sl = entry_premium
                         position['current_sl'] = new_sl
@@ -1205,8 +1257,9 @@ class NiftyBot:
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
 
-                elif TRAILING_STOP_METHOD == 'percent':
-                    # Legacy: Trail at 50% of max profit
+            elif exit_reason is None and TRAILING_STOP_METHOD == 'percent':
+                # Legacy: Trail at 50% of max profit
+                if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
                         new_sl = entry_premium
                         position['current_sl'] = new_sl
