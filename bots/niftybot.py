@@ -866,11 +866,22 @@ class NiftyBot:
             self.logger.warning(f"Max consecutive losses ({MAX_CONSECUTIVE_LOSSES}) reached")
             return signals  # Don't take new trades, but keep existing positions
 
-        # Fetch data
+        # ============================================
+        # CRITICAL: CHECK EXITS FIRST - BEFORE data fetch
+        # ============================================
+        # This ensures active positions are ALWAYS monitored, even if
+        # spot data fetch fails. We check exits with df=None first for
+        # emergency/basic SL, then again with df for advanced trailing.
+        if len(self.active_positions) > 0:
+            # First pass: Emergency exits (no df needed - pure LTP based)
+            emergency_exits = self._check_exits(df=None)
+            signals.extend(emergency_exits)
+
+        # Fetch data for entries and advanced trailing
         df = self.fetch_data()
         if df is None or len(df) < 20:
-            self.logger.debug("Insufficient data")
-            return signals
+            self.logger.debug("Insufficient spot data - entries skipped, exits still monitored")
+            return signals  # Return any emergency exits we found
 
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
@@ -882,9 +893,10 @@ class NiftyBot:
         if MARKET_REGIME_ENABLED and not self._regime_analyzed:
             self._analyze_market_regime()
 
-        # Check exits first (always check exits)
-        exit_signals = self._check_exits(df)
-        signals.extend(exit_signals)
+        # Second pass: Advanced trailing exits (with df for Supertrend/ADX)
+        if len(self.active_positions) > 0:
+            exit_signals = self._check_exits(df)
+            signals.extend(exit_signals)
 
         # Check if we can take new entries
         if not self._can_enter_new_trade(now):
@@ -1095,13 +1107,18 @@ class NiftyBot:
             'initial_sl': initial_sl
         }
 
-    def _check_exits(self, df):
+    def _check_exits(self, df=None):
         """
         Check exit conditions for active positions.
 
+        Args:
+            df: NIFTY spot dataframe (optional). If None, only basic LTP/emergency
+                exits are checked. This allows exit monitoring even when spot
+                data fetch fails.
+
         Hidden Stop Loss Logic (Anti Stop-Hunting):
         - If HIDDEN_SL_ENABLED: Only exit when CANDLE CLOSES below SL (not on wick touch)
-        - Emergency SL: If LTP drops EMERGENCY_SL_PERCENT (40%), exit immediately
+        - Emergency SL: If LTP drops EMERGENCY_SL_PERCENT (25%), exit immediately
         - Technical SL: Uses option candle structure instead of fixed percentage
         """
         exit_signals = []
@@ -1192,9 +1209,10 @@ class NiftyBot:
                     exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing (when in profit)
-            # Only run trailing logic if no exit triggered yet
+            # Only run trailing logic if no exit triggered yet AND df is available
+            # (df is needed for ADX/Supertrend checks)
 
-            if exit_reason is None and TRAILING_STOP_METHOD == 'dynamic':
+            if exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'dynamic':
                 # ============================================
                 # TREND-AWARE TRAILING STOP LOSS
                 # ============================================
@@ -1276,8 +1294,8 @@ class NiftyBot:
                         elif not is_call and is_supertrend_bullish(df):
                             exit_reason = f"Supertrend flipped bullish in strong trend (ADX={current_adx:.1f})"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'supertrend':
-                # Legacy: Exit on Supertrend flip
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'supertrend':
+                # Legacy: Exit on Supertrend flip (requires df for Supertrend check)
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
                         new_sl = entry_premium
@@ -1289,7 +1307,7 @@ class NiftyBot:
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'percent':
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'percent':
                 # Legacy: Trail at 50% of max profit
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:

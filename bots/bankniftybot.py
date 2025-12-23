@@ -36,7 +36,9 @@ from common.config import (
     WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
     WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
     # Expiry Day Protection
-    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME
+    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
+    # Emergency Stop Loss
+    EMERGENCY_SL_PERCENT
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
@@ -751,18 +753,30 @@ class BankNiftyBot:
             self.logger.warning(f"Max consecutive losses ({MAX_CONSECUTIVE_LOSSES}) reached")
             return signals  # Don't take new trades, but keep existing positions
 
-        # Fetch data
+        # ============================================
+        # CRITICAL: CHECK EXITS FIRST - BEFORE data fetch
+        # ============================================
+        # This ensures active positions are ALWAYS monitored, even if
+        # spot data fetch fails. We check exits with df=None first for
+        # emergency/basic SL, then again with df for advanced trailing.
+        if len(self.active_positions) > 0:
+            # First pass: Emergency exits (no df needed - pure LTP based)
+            emergency_exits = self._check_exits(df=None)
+            signals.extend(emergency_exits)
+
+        # Fetch data for entries and advanced trailing
         df = self.fetch_data()
         if df is None or len(df) < 20:
-            self.logger.debug("Insufficient data")
-            return signals
+            self.logger.debug("Insufficient spot data - entries skipped, exits still monitored")
+            return signals  # Return any emergency exits we found
 
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
 
-        # Check exits first (always check exits)
-        exit_signals = self._check_exits(df)
-        signals.extend(exit_signals)
+        # Second pass: Advanced trailing exits (with df for Supertrend/ADX)
+        if len(self.active_positions) > 0:
+            exit_signals = self._check_exits(df)
+            signals.extend(exit_signals)
 
         # Check if we can take new entries
         if not self._can_enter_new_trade(now):
@@ -851,8 +865,15 @@ class BankNiftyBot:
             'initial_sl': initial_sl
         }
 
-    def _check_exits(self, df):
-        """Check exit conditions for active positions."""
+    def _check_exits(self, df=None):
+        """
+        Check exit conditions for active positions.
+
+        Args:
+            df: BANKNIFTY spot dataframe (optional). If None, only basic LTP/emergency
+                exits are checked. This allows exit monitoring even when spot
+                data fetch fails.
+        """
         exit_signals = []
 
         for symbol, position in list(self.active_positions.items()):
@@ -874,18 +895,28 @@ class BankNiftyBot:
 
             # Calculate profit percentage
             profit_pct = ((current_premium - entry_premium) / entry_premium) * 100
+            loss_pct = -profit_pct if profit_pct < 0 else 0
 
             # Determine exit reason
             exit_reason = None
             new_sl = current_sl
 
-            # Phase 1: Check initial stop loss
-            if current_premium <= initial_sl:
+            # ============================================
+            # EMERGENCY STOP LOSS (LTP-based, no df needed)
+            # ============================================
+            # If loss exceeds emergency threshold, exit immediately
+            # This protects against flash crashes even when df fetch fails
+            if loss_pct >= EMERGENCY_SL_PERCENT:
+                exit_reason = f"EMERGENCY SL hit (Loss: {loss_pct:.1f}% >= {EMERGENCY_SL_PERCENT}%)"
+                self.logger.warning(f"{symbol}: {exit_reason}")
+
+            # Phase 1: Check initial stop loss (LTP-based)
+            if exit_reason is None and current_premium <= initial_sl:
                 exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing
-            # Only run trailing logic if no exit triggered yet
-            if exit_reason is None and TRAILING_STOP_METHOD == 'dynamic':
+            # Only run trailing logic if no exit triggered yet AND df is available
+            if exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'dynamic':
                 # ============================================
                 # TREND-AWARE TRAILING STOP LOSS
                 # ============================================
@@ -967,8 +998,8 @@ class BankNiftyBot:
                         elif not is_call and is_supertrend_bullish(df):
                             exit_reason = f"Supertrend flipped bullish in strong trend (ADX={current_adx:.1f})"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'supertrend':
-                # Legacy: Exit on Supertrend flip
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'supertrend':
+                # Legacy: Exit on Supertrend flip (requires df for Supertrend check)
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
                         new_sl = entry_premium
@@ -980,7 +1011,7 @@ class BankNiftyBot:
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'percent':
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'percent':
                 # Legacy: Trail at 50% of max profit
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
