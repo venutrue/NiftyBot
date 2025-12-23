@@ -195,6 +195,15 @@ SKIP_ON_INSIDE_DAY = True             # Skip when trending week + inside day
 SKIP_ON_EVENT_DAY = True              # Skip on RBI, Budget, Monthly expiry days
 
 ##############################################
+# EXPIRY DAY PROTECTION
+##############################################
+# On expiry day, option buying is extremely risky due to rapid theta decay
+# Options can lose 80-90% of value in minutes as time premium evaporates
+
+SKIP_OPTION_BUYING_ON_EXPIRY = True   # Block option buying on expiry day (STRONGLY RECOMMENDED)
+EXPIRY_DAY_CUTOFF_TIME = "12:00"      # If trading on expiry, stop after this time (HH:MM format)
+
+##############################################
 # ENTRY PARAMETERS (VWAP + Supertrend + ADX)
 ##############################################
 

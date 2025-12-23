@@ -34,7 +34,9 @@ from common.config import (
     STRONG_TREND_BREAKEVEN_PERCENT, STRONG_TREND_TRAIL_FREQUENCY,
     STRONG_TREND_TRAIL_INCREMENT, STRONG_TREND_MAX_GIVEBACK, STRONG_TREND_EXIT_ON_ST_FLIP,
     WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
-    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK
+    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
+    # Expiry Day Protection
+    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
@@ -111,6 +113,11 @@ class BankNiftyBot:
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
         self._instruments_loaded = False
+
+        # Reset expiry day flags
+        self._expiry_skip_logged = False
+        self._expiry_logged = False
+
         self.logger.info("Daily state reset")
 
     def _load_nfo_instruments(self):
@@ -714,6 +721,22 @@ class BankNiftyBot:
         if not self._is_trading_time(now):
             return signals
 
+        # =============================================
+        # EXPIRY DAY PROTECTION
+        # =============================================
+        # On expiry day, option buying is extremely risky due to rapid theta decay.
+        # Options can lose 80-90% of value in minutes as time premium evaporates.
+        # Block all option buying on expiry day - consider option selling strategies instead.
+        if SKIP_OPTION_BUYING_ON_EXPIRY and self._is_expiry_day():
+            if not hasattr(self, '_expiry_skip_logged') or not self._expiry_skip_logged:
+                self.logger.warning(
+                    f"EXPIRY DAY PROTECTION: Option buying BLOCKED today (BANKNIFTY expiry). "
+                    f"Rapid theta decay makes buying extremely risky. "
+                    f"Consider option selling strategies instead."
+                )
+                self._expiry_skip_logged = True
+            return signals
+
         # Force exit check (3:15 PM)
         if self._is_force_exit_time(now):
             return self._force_exit_all("End of day exit")
@@ -1115,6 +1138,51 @@ class BankNiftyBot:
         """Check if it's time to force exit all positions."""
         force_exit = now.replace(hour=FORCE_EXIT_HOUR, minute=FORCE_EXIT_MINUTE, second=0)
         return now >= force_exit
+
+    def _is_expiry_day(self):
+        """
+        Check if today is BANKNIFTY's weekly expiry day (Wednesday).
+
+        On expiry day, option buying is extremely risky due to:
+        - Rapid theta decay (time value erodes quickly)
+        - Options can lose 80-90% value in minutes
+        - High volatility and unpredictable moves
+        - Premium sellers have edge, buyers get crushed
+
+        Returns:
+            True if today is expiry day
+        """
+        # Get the actual expiry date from instruments
+        expiry_date = self.get_weekly_expiry()
+        if expiry_date is None:
+            # If we can't determine expiry, check if today is Wednesday (BANKNIFTY expiry)
+            return datetime.date.today().weekday() == 2  # Wednesday = 2
+
+        return datetime.date.today() == expiry_date
+
+    def _is_past_expiry_cutoff(self, now):
+        """
+        Check if we're past the expiry day cutoff time.
+
+        Even if SKIP_OPTION_BUYING_ON_EXPIRY is False, we should stop
+        buying options after EXPIRY_DAY_CUTOFF_TIME on expiry day.
+
+        Args:
+            now: Current datetime
+
+        Returns:
+            True if past cutoff time on expiry day
+        """
+        if not self._is_expiry_day():
+            return False
+
+        # Parse cutoff time
+        cutoff_parts = EXPIRY_DAY_CUTOFF_TIME.split(':')
+        cutoff_hour = int(cutoff_parts[0])
+        cutoff_minute = int(cutoff_parts[1]) if len(cutoff_parts) > 1 else 0
+
+        cutoff_time = now.replace(hour=cutoff_hour, minute=cutoff_minute, second=0)
+        return now >= cutoff_time
 
     def get_status(self):
         """Get current bot status."""

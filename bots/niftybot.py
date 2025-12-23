@@ -37,7 +37,9 @@ from common.config import (
     STRONG_TREND_BREAKEVEN_PERCENT, STRONG_TREND_TRAIL_FREQUENCY,
     STRONG_TREND_TRAIL_INCREMENT, STRONG_TREND_MAX_GIVEBACK, STRONG_TREND_EXIT_ON_ST_FLIP,
     WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
-    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK
+    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
+    # Expiry Day Protection
+    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
@@ -121,6 +123,12 @@ class NiftyBot:
         # Reset market regime analysis (will be recalculated at market open)
         self.current_regime = None
         self._regime_analyzed = False
+
+        # Reset expiry day flags (will be rechecked at first scan)
+        self._expiry_day_checked = False
+        self._is_expiry = False
+        self._expiry_skip_logged = False
+        self._expiry_cutoff_logged = False
 
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
@@ -883,6 +891,30 @@ class NiftyBot:
             return signals
 
         # ============================================
+        # EXPIRY DAY PROTECTION: Block option buying on expiry day
+        # Options lose 80-90% of value rapidly due to theta decay
+        # ============================================
+        if SKIP_OPTION_BUYING_ON_EXPIRY and self._is_expiry_day():
+            if not hasattr(self, '_expiry_skip_logged') or not self._expiry_skip_logged:
+                self.logger.warning(
+                    f"🚫 EXPIRY DAY PROTECTION: Option buying BLOCKED today. "
+                    f"Rapid theta decay makes buying extremely risky. "
+                    f"Consider option selling strategies instead."
+                )
+                self._expiry_skip_logged = True
+            return signals
+
+        # Additional check: Even if expiry buying is allowed, stop after cutoff time
+        if self._is_expiry_day() and self._is_past_expiry_cutoff(now):
+            if not hasattr(self, '_expiry_cutoff_logged') or not self._expiry_cutoff_logged:
+                self.logger.warning(
+                    f"⏰ EXPIRY CUTOFF: Past {EXPIRY_DAY_CUTOFF_TIME} on expiry day. "
+                    f"No new entries allowed."
+                )
+                self._expiry_cutoff_logged = True
+            return signals
+
+        # ============================================
         # REGIME FILTER: Skip if market conditions don't align
         # This eliminates 50-60% of bad trades
         # ============================================
@@ -1422,6 +1454,43 @@ class NiftyBot:
         """Check if it's time to force exit all positions."""
         force_exit = now.replace(hour=FORCE_EXIT_HOUR, minute=FORCE_EXIT_MINUTE, second=0)
         return now >= force_exit
+
+    def _is_expiry_day(self):
+        """
+        Check if today is the expiry day for the instrument being traded.
+
+        On expiry day, option buying is extremely risky due to rapid theta decay.
+        Options can lose 80-90% of value in minutes as time premium evaporates.
+
+        Returns:
+            bool: True if today is expiry day
+        """
+        if not hasattr(self, '_expiry_day_checked') or not self._expiry_day_checked:
+            expiry_date = self.get_weekly_expiry()
+            if expiry_date:
+                today = datetime.date.today()
+                self._is_expiry = (expiry_date == today)
+                self._expiry_day_checked = True
+                if self._is_expiry:
+                    self.logger.warning(
+                        f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
+                        f"Option buying is HIGH RISK due to rapid theta decay!"
+                    )
+            else:
+                self._is_expiry = False
+                self._expiry_day_checked = True
+        return getattr(self, '_is_expiry', False)
+
+    def _is_past_expiry_cutoff(self, now):
+        """Check if past the cutoff time for expiry day trading."""
+        if EXPIRY_DAY_CUTOFF_TIME:
+            try:
+                cutoff_hour, cutoff_minute = map(int, EXPIRY_DAY_CUTOFF_TIME.split(':'))
+                cutoff_time = now.replace(hour=cutoff_hour, minute=cutoff_minute, second=0)
+                return now >= cutoff_time
+            except:
+                return False
+        return False
 
     def get_status(self):
         """Get current bot status."""
