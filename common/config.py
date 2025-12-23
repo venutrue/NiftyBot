@@ -311,10 +311,11 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # NETWORK & RETRY CONFIGURATION
 ##############################################
 
-# API retry settings for network errors
-API_MAX_RETRIES = 3                    # Maximum retry attempts for API calls
-API_RETRY_DELAY = 2                    # Initial retry delay in seconds (doubles each retry)
+# API retry settings for network/server errors
+API_MAX_RETRIES = 5                    # Maximum retry attempts for API calls (increased from 3)
+API_RETRY_DELAY = 1                    # Initial retry delay in seconds (doubles each retry)
 API_TIMEOUT = 30                       # Request timeout in seconds
 
-# Specific retry delays (exponential backoff): 2s, 4s, 8s
-# Total max wait time: ~14 seconds for 3 retries
+# Specific retry delays (exponential backoff): 1s, 2s, 4s, 8s, 16s
+# Total max wait time: ~31 seconds for 5 retries
+# This handles temporary Kite API issues during market hours
