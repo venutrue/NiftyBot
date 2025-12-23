@@ -34,7 +34,11 @@ from common.config import (
     STRONG_TREND_BREAKEVEN_PERCENT, STRONG_TREND_TRAIL_FREQUENCY,
     STRONG_TREND_TRAIL_INCREMENT, STRONG_TREND_MAX_GIVEBACK, STRONG_TREND_EXIT_ON_ST_FLIP,
     WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
-    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK
+    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
+    # Expiry Day Protection
+    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
+    # Emergency Stop Loss
+    EMERGENCY_SL_PERCENT
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
@@ -111,6 +115,11 @@ class BankNiftyBot:
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
         self._instruments_loaded = False
+
+        # Reset expiry day flags
+        self._expiry_skip_logged = False
+        self._expiry_logged = False
+
         self.logger.info("Daily state reset")
 
     def _load_nfo_instruments(self):
@@ -563,14 +572,9 @@ class BankNiftyBot:
         atm_strike = get_atm_strike(current_price, step=BANKNIFTY_STRIKE_STEP)
         st_status = "Bullish" if st_bullish else "Bearish"
 
-        # Check ADX strength first (no point fetching option data if no trend)
-        if current_adx < ADX_ENTRY_THRESHOLD:
-            self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                f"ADX: {current_adx:.1f} | ST: {st_status} | "
-                f"No trend (ADX < {ADX_ENTRY_THRESHOLD})"
-            )
-            return None
+        # Check ADX strength - determine if we can trade or just monitor
+        can_trade = current_adx >= ADX_ENTRY_THRESHOLD
+        mode_status = "" if can_trade else f" [MONITORING - ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
         # Scan option chain for CE if Supertrend is Bullish
         if st_bullish:
@@ -604,7 +608,7 @@ class BankNiftyBot:
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"CE Chain Analysis ({len(positive_signals)}/{len(ce_strikes)} strikes above VWAP):"
@@ -619,15 +623,22 @@ class BankNiftyBot:
                     f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}{atm_marker}"
                 )
 
-            # Entry condition: ATM Premium > VWAP (simple, clean)
+            # Entry condition: ATM Premium > VWAP AND ADX strong enough
             if atm_data['signal']:
-                self.logger.info(
-                    f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
-                    f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                    f"(+{atm_data['vwap_pct']:.1f}%) | "
-                    f"Supertrend Bullish | ADX {current_adx:.1f}"
-                )
-                return 'BUY_CE'
+                if can_trade:
+                    self.logger.info(
+                        f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | "
+                        f"Supertrend Bullish | ADX {current_adx:.1f}"
+                    )
+                    return 'BUY_CE'
+                else:
+                    self.logger.info(
+                        f">>> CE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                    )
 
         # Scan option chain for PE if Supertrend is Bearish
         elif st_bearish:
@@ -661,7 +672,7 @@ class BankNiftyBot:
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"PE Chain Analysis ({len(positive_signals)}/{len(pe_strikes)} strikes above VWAP):"
@@ -676,15 +687,22 @@ class BankNiftyBot:
                     f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}{atm_marker}"
                 )
 
-            # Entry condition: ATM Premium > VWAP (simple, clean)
+            # Entry condition: ATM Premium > VWAP AND ADX strong enough
             if atm_data['signal']:
-                self.logger.info(
-                    f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
-                    f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                    f"(+{atm_data['vwap_pct']:.1f}%) | "
-                    f"Supertrend Bearish | ADX {current_adx:.1f}"
-                )
-                return 'BUY_PE'
+                if can_trade:
+                    self.logger.info(
+                        f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | "
+                        f"Supertrend Bearish | ADX {current_adx:.1f}"
+                    )
+                    return 'BUY_PE'
+                else:
+                    self.logger.info(
+                        f">>> PE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                    )
 
         return None
 
@@ -705,6 +723,22 @@ class BankNiftyBot:
         if not self._is_trading_time(now):
             return signals
 
+        # =============================================
+        # EXPIRY DAY PROTECTION
+        # =============================================
+        # On expiry day, option buying is extremely risky due to rapid theta decay.
+        # Options can lose 80-90% of value in minutes as time premium evaporates.
+        # Block all option buying on expiry day - consider option selling strategies instead.
+        if SKIP_OPTION_BUYING_ON_EXPIRY and self._is_expiry_day():
+            if not hasattr(self, '_expiry_skip_logged') or not self._expiry_skip_logged:
+                self.logger.warning(
+                    f"EXPIRY DAY PROTECTION: Option buying BLOCKED today (BANKNIFTY expiry). "
+                    f"Rapid theta decay makes buying extremely risky. "
+                    f"Consider option selling strategies instead."
+                )
+                self._expiry_skip_logged = True
+            return signals
+
         # Force exit check (3:15 PM)
         if self._is_force_exit_time(now):
             return self._force_exit_all("End of day exit")
@@ -719,18 +753,30 @@ class BankNiftyBot:
             self.logger.warning(f"Max consecutive losses ({MAX_CONSECUTIVE_LOSSES}) reached")
             return signals  # Don't take new trades, but keep existing positions
 
-        # Fetch data
+        # ============================================
+        # CRITICAL: CHECK EXITS FIRST - BEFORE data fetch
+        # ============================================
+        # This ensures active positions are ALWAYS monitored, even if
+        # spot data fetch fails. We check exits with df=None first for
+        # emergency/basic SL, then again with df for advanced trailing.
+        if len(self.active_positions) > 0:
+            # First pass: Emergency exits (no df needed - pure LTP based)
+            emergency_exits = self._check_exits(df=None)
+            signals.extend(emergency_exits)
+
+        # Fetch data for entries and advanced trailing
         df = self.fetch_data()
         if df is None or len(df) < 20:
-            self.logger.debug("Insufficient data")
-            return signals
+            self.logger.debug("Insufficient spot data - entries skipped, exits still monitored")
+            return signals  # Return any emergency exits we found
 
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
 
-        # Check exits first (always check exits)
-        exit_signals = self._check_exits(df)
-        signals.extend(exit_signals)
+        # Second pass: Advanced trailing exits (with df for Supertrend/ADX)
+        if len(self.active_positions) > 0:
+            exit_signals = self._check_exits(df)
+            signals.extend(exit_signals)
 
         # Check if we can take new entries
         if not self._can_enter_new_trade(now):
@@ -819,8 +865,15 @@ class BankNiftyBot:
             'initial_sl': initial_sl
         }
 
-    def _check_exits(self, df):
-        """Check exit conditions for active positions."""
+    def _check_exits(self, df=None):
+        """
+        Check exit conditions for active positions.
+
+        Args:
+            df: BANKNIFTY spot dataframe (optional). If None, only basic LTP/emergency
+                exits are checked. This allows exit monitoring even when spot
+                data fetch fails.
+        """
         exit_signals = []
 
         for symbol, position in list(self.active_positions.items()):
@@ -842,18 +895,28 @@ class BankNiftyBot:
 
             # Calculate profit percentage
             profit_pct = ((current_premium - entry_premium) / entry_premium) * 100
+            loss_pct = -profit_pct if profit_pct < 0 else 0
 
             # Determine exit reason
             exit_reason = None
             new_sl = current_sl
 
-            # Phase 1: Check initial stop loss
-            if current_premium <= initial_sl:
+            # ============================================
+            # EMERGENCY STOP LOSS (LTP-based, no df needed)
+            # ============================================
+            # If loss exceeds emergency threshold, exit immediately
+            # This protects against flash crashes even when df fetch fails
+            if loss_pct >= EMERGENCY_SL_PERCENT:
+                exit_reason = f"EMERGENCY SL hit (Loss: {loss_pct:.1f}% >= {EMERGENCY_SL_PERCENT}%)"
+                self.logger.warning(f"{symbol}: {exit_reason}")
+
+            # Phase 1: Check initial stop loss (LTP-based)
+            if exit_reason is None and current_premium <= initial_sl:
                 exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing
-            # Only run trailing logic if no exit triggered yet
-            if exit_reason is None and TRAILING_STOP_METHOD == 'dynamic':
+            # Only run trailing logic if no exit triggered yet AND df is available
+            if exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'dynamic':
                 # ============================================
                 # TREND-AWARE TRAILING STOP LOSS
                 # ============================================
@@ -935,8 +998,8 @@ class BankNiftyBot:
                         elif not is_call and is_supertrend_bullish(df):
                             exit_reason = f"Supertrend flipped bullish in strong trend (ADX={current_adx:.1f})"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'supertrend':
-                # Legacy: Exit on Supertrend flip
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'supertrend':
+                # Legacy: Exit on Supertrend flip (requires df for Supertrend check)
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
                         new_sl = entry_premium
@@ -948,7 +1011,7 @@ class BankNiftyBot:
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'percent':
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'percent':
                 # Legacy: Trail at 50% of max profit
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
@@ -1106,6 +1169,51 @@ class BankNiftyBot:
         """Check if it's time to force exit all positions."""
         force_exit = now.replace(hour=FORCE_EXIT_HOUR, minute=FORCE_EXIT_MINUTE, second=0)
         return now >= force_exit
+
+    def _is_expiry_day(self):
+        """
+        Check if today is BANKNIFTY's weekly expiry day (Wednesday).
+
+        On expiry day, option buying is extremely risky due to:
+        - Rapid theta decay (time value erodes quickly)
+        - Options can lose 80-90% value in minutes
+        - High volatility and unpredictable moves
+        - Premium sellers have edge, buyers get crushed
+
+        Returns:
+            True if today is expiry day
+        """
+        # Get the actual expiry date from instruments
+        expiry_date = self.get_weekly_expiry()
+        if expiry_date is None:
+            # If we can't determine expiry, check if today is Wednesday (BANKNIFTY expiry)
+            return datetime.date.today().weekday() == 2  # Wednesday = 2
+
+        return datetime.date.today() == expiry_date
+
+    def _is_past_expiry_cutoff(self, now):
+        """
+        Check if we're past the expiry day cutoff time.
+
+        Even if SKIP_OPTION_BUYING_ON_EXPIRY is False, we should stop
+        buying options after EXPIRY_DAY_CUTOFF_TIME on expiry day.
+
+        Args:
+            now: Current datetime
+
+        Returns:
+            True if past cutoff time on expiry day
+        """
+        if not self._is_expiry_day():
+            return False
+
+        # Parse cutoff time
+        cutoff_parts = EXPIRY_DAY_CUTOFF_TIME.split(':')
+        cutoff_hour = int(cutoff_parts[0])
+        cutoff_minute = int(cutoff_parts[1]) if len(cutoff_parts) > 1 else 0
+
+        cutoff_time = now.replace(hour=cutoff_hour, minute=cutoff_minute, second=0)
+        return now >= cutoff_time
 
     def get_status(self):
         """Get current bot status."""

@@ -143,7 +143,7 @@ TRAIL_PERCENT = 50                    # Trail at 50% of max profit (legacy - use
 
 HIDDEN_SL_ENABLED = True              # Enable hidden SL with candle close confirmation
 HIDDEN_SL_METHOD = 'technical'        # 'technical' (candle structure) or 'fixed' (percentage)
-EMERGENCY_SL_PERCENT = 25             # Emergency exit if LTP drops 25%+ (no candle close wait)
+EMERGENCY_SL_PERCENT = 20             # Emergency exit if LTP drops 20%+ (no candle close wait)
 SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5minute recommended)
 
 ##############################################
@@ -193,6 +193,15 @@ ENFORCE_DIRECTION_FILTER = True       # If True, only trade in direction allowed
 # Skip trading on these patterns even if score is ok
 SKIP_ON_INSIDE_DAY = True             # Skip when trending week + inside day
 SKIP_ON_EVENT_DAY = True              # Skip on RBI, Budget, Monthly expiry days
+
+##############################################
+# EXPIRY DAY PROTECTION
+##############################################
+# On expiry day, option buying is extremely risky due to rapid theta decay
+# Options can lose 80-90% of value in minutes as time premium evaporates
+
+SKIP_OPTION_BUYING_ON_EXPIRY = True   # Block option buying on expiry day (STRONGLY RECOMMENDED)
+EXPIRY_DAY_CUTOFF_TIME = "12:00"      # If trading on expiry, stop after this time (HH:MM format)
 
 ##############################################
 # ENTRY PARAMETERS (VWAP + Supertrend + ADX)
@@ -302,10 +311,11 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # NETWORK & RETRY CONFIGURATION
 ##############################################
 
-# API retry settings for network errors
-API_MAX_RETRIES = 3                    # Maximum retry attempts for API calls
-API_RETRY_DELAY = 2                    # Initial retry delay in seconds (doubles each retry)
+# API retry settings for network/server errors
+API_MAX_RETRIES = 5                    # Maximum retry attempts for API calls (increased from 3)
+API_RETRY_DELAY = 1                    # Initial retry delay in seconds (doubles each retry)
 API_TIMEOUT = 30                       # Request timeout in seconds
 
-# Specific retry delays (exponential backoff): 2s, 4s, 8s
-# Total max wait time: ~14 seconds for 3 retries
+# Specific retry delays (exponential backoff): 1s, 2s, 4s, 8s, 16s
+# Total max wait time: ~31 seconds for 5 retries
+# This handles temporary Kite API issues during market hours

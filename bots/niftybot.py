@@ -37,7 +37,9 @@ from common.config import (
     STRONG_TREND_BREAKEVEN_PERCENT, STRONG_TREND_TRAIL_FREQUENCY,
     STRONG_TREND_TRAIL_INCREMENT, STRONG_TREND_MAX_GIVEBACK, STRONG_TREND_EXIT_ON_ST_FLIP,
     WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
-    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK
+    WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
+    # Expiry Day Protection
+    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
@@ -121,6 +123,12 @@ class NiftyBot:
         # Reset market regime analysis (will be recalculated at market open)
         self.current_regime = None
         self._regime_analyzed = False
+
+        # Reset expiry day flags (will be rechecked at first scan)
+        self._expiry_day_checked = False
+        self._is_expiry = False
+        self._expiry_skip_logged = False
+        self._expiry_cutoff_logged = False
 
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
@@ -858,11 +866,22 @@ class NiftyBot:
             self.logger.warning(f"Max consecutive losses ({MAX_CONSECUTIVE_LOSSES}) reached")
             return signals  # Don't take new trades, but keep existing positions
 
-        # Fetch data
+        # ============================================
+        # CRITICAL: CHECK EXITS FIRST - BEFORE data fetch
+        # ============================================
+        # This ensures active positions are ALWAYS monitored, even if
+        # spot data fetch fails. We check exits with df=None first for
+        # emergency/basic SL, then again with df for advanced trailing.
+        if len(self.active_positions) > 0:
+            # First pass: Emergency exits (no df needed - pure LTP based)
+            emergency_exits = self._check_exits(df=None)
+            signals.extend(emergency_exits)
+
+        # Fetch data for entries and advanced trailing
         df = self.fetch_data()
         if df is None or len(df) < 20:
-            self.logger.debug("Insufficient data")
-            return signals
+            self.logger.debug("Insufficient spot data - entries skipped, exits still monitored")
+            return signals  # Return any emergency exits we found
 
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
@@ -874,12 +893,37 @@ class NiftyBot:
         if MARKET_REGIME_ENABLED and not self._regime_analyzed:
             self._analyze_market_regime()
 
-        # Check exits first (always check exits)
-        exit_signals = self._check_exits(df)
-        signals.extend(exit_signals)
+        # Second pass: Advanced trailing exits (with df for Supertrend/ADX)
+        if len(self.active_positions) > 0:
+            exit_signals = self._check_exits(df)
+            signals.extend(exit_signals)
 
         # Check if we can take new entries
         if not self._can_enter_new_trade(now):
+            return signals
+
+        # ============================================
+        # EXPIRY DAY PROTECTION: Block option buying on expiry day
+        # Options lose 80-90% of value rapidly due to theta decay
+        # ============================================
+        if SKIP_OPTION_BUYING_ON_EXPIRY and self._is_expiry_day():
+            if not hasattr(self, '_expiry_skip_logged') or not self._expiry_skip_logged:
+                self.logger.warning(
+                    f"🚫 EXPIRY DAY PROTECTION: Option buying BLOCKED today. "
+                    f"Rapid theta decay makes buying extremely risky. "
+                    f"Consider option selling strategies instead."
+                )
+                self._expiry_skip_logged = True
+            return signals
+
+        # Additional check: Even if expiry buying is allowed, stop after cutoff time
+        if self._is_expiry_day() and self._is_past_expiry_cutoff(now):
+            if not hasattr(self, '_expiry_cutoff_logged') or not self._expiry_cutoff_logged:
+                self.logger.warning(
+                    f"⏰ EXPIRY CUTOFF: Past {EXPIRY_DAY_CUTOFF_TIME} on expiry day. "
+                    f"No new entries allowed."
+                )
+                self._expiry_cutoff_logged = True
             return signals
 
         # ============================================
@@ -1063,13 +1107,18 @@ class NiftyBot:
             'initial_sl': initial_sl
         }
 
-    def _check_exits(self, df):
+    def _check_exits(self, df=None):
         """
         Check exit conditions for active positions.
 
+        Args:
+            df: NIFTY spot dataframe (optional). If None, only basic LTP/emergency
+                exits are checked. This allows exit monitoring even when spot
+                data fetch fails.
+
         Hidden Stop Loss Logic (Anti Stop-Hunting):
         - If HIDDEN_SL_ENABLED: Only exit when CANDLE CLOSES below SL (not on wick touch)
-        - Emergency SL: If LTP drops EMERGENCY_SL_PERCENT (40%), exit immediately
+        - Emergency SL: If LTP drops EMERGENCY_SL_PERCENT (25%), exit immediately
         - Technical SL: Uses option candle structure instead of fixed percentage
         """
         exit_signals = []
@@ -1160,9 +1209,10 @@ class NiftyBot:
                     exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing (when in profit)
-            # Only run trailing logic if no exit triggered yet
+            # Only run trailing logic if no exit triggered yet AND df is available
+            # (df is needed for ADX/Supertrend checks)
 
-            if exit_reason is None and TRAILING_STOP_METHOD == 'dynamic':
+            if exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'dynamic':
                 # ============================================
                 # TREND-AWARE TRAILING STOP LOSS
                 # ============================================
@@ -1244,8 +1294,8 @@ class NiftyBot:
                         elif not is_call and is_supertrend_bullish(df):
                             exit_reason = f"Supertrend flipped bullish in strong trend (ADX={current_adx:.1f})"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'supertrend':
-                # Legacy: Exit on Supertrend flip
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'supertrend':
+                # Legacy: Exit on Supertrend flip (requires df for Supertrend check)
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
                         new_sl = entry_premium
@@ -1257,7 +1307,7 @@ class NiftyBot:
                     elif not is_call and is_supertrend_bullish(df):
                         exit_reason = "Supertrend flipped bullish"
 
-            elif exit_reason is None and TRAILING_STOP_METHOD == 'percent':
+            elif exit_reason is None and df is not None and TRAILING_STOP_METHOD == 'percent':
                 # Legacy: Trail at 50% of max profit
                 if profit_pct >= BREAKEVEN_TRIGGER_PERCENT:
                     if current_sl < entry_premium:
@@ -1422,6 +1472,43 @@ class NiftyBot:
         """Check if it's time to force exit all positions."""
         force_exit = now.replace(hour=FORCE_EXIT_HOUR, minute=FORCE_EXIT_MINUTE, second=0)
         return now >= force_exit
+
+    def _is_expiry_day(self):
+        """
+        Check if today is the expiry day for the instrument being traded.
+
+        On expiry day, option buying is extremely risky due to rapid theta decay.
+        Options can lose 80-90% of value in minutes as time premium evaporates.
+
+        Returns:
+            bool: True if today is expiry day
+        """
+        if not hasattr(self, '_expiry_day_checked') or not self._expiry_day_checked:
+            expiry_date = self.get_weekly_expiry()
+            if expiry_date:
+                today = datetime.date.today()
+                self._is_expiry = (expiry_date == today)
+                self._expiry_day_checked = True
+                if self._is_expiry:
+                    self.logger.warning(
+                        f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
+                        f"Option buying is HIGH RISK due to rapid theta decay!"
+                    )
+            else:
+                self._is_expiry = False
+                self._expiry_day_checked = True
+        return getattr(self, '_is_expiry', False)
+
+    def _is_past_expiry_cutoff(self, now):
+        """Check if past the cutoff time for expiry day trading."""
+        if EXPIRY_DAY_CUTOFF_TIME:
+            try:
+                cutoff_hour, cutoff_minute = map(int, EXPIRY_DAY_CUTOFF_TIME.split(':'))
+                cutoff_time = now.replace(hour=cutoff_hour, minute=cutoff_minute, second=0)
+                return now >= cutoff_time
+            except:
+                return False
+        return False
 
     def get_status(self):
         """Get current bot status."""

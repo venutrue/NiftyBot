@@ -191,10 +191,16 @@ class KiteExecutor(BrokerInterface):
                 last_error = e
                 error_str = str(e)
 
-                # Check if it's a network error that should be retried
+                # Check if it's a retryable error (network OR server-side)
                 is_network_error = any(err in error_str.lower() for err in [
                     'connection', 'reset', 'timeout', 'timed out',
-                    'network', 'refused', 'unreachable', 'aborted'
+                    'network', 'refused', 'unreachable', 'aborted',
+                    # Server-side errors that should also be retried
+                    '429', 'too many requests', 'rate limit',
+                    '500', '502', '503', '504', 'internal server', 'bad gateway',
+                    'service unavailable', 'gateway timeout',
+                    # Token/session errors (might recover after retry)
+                    'token', 'session', 'expired'
                 ])
 
                 if is_network_error and attempt < API_MAX_RETRIES:
