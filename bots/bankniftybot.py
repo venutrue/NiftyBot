@@ -563,14 +563,9 @@ class BankNiftyBot:
         atm_strike = get_atm_strike(current_price, step=BANKNIFTY_STRIKE_STEP)
         st_status = "Bullish" if st_bullish else "Bearish"
 
-        # Check ADX strength first (no point fetching option data if no trend)
-        if current_adx < ADX_ENTRY_THRESHOLD:
-            self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                f"ADX: {current_adx:.1f} | ST: {st_status} | "
-                f"No trend (ADX < {ADX_ENTRY_THRESHOLD})"
-            )
-            return None
+        # Check ADX strength - determine if we can trade or just monitor
+        can_trade = current_adx >= ADX_ENTRY_THRESHOLD
+        mode_status = "" if can_trade else f" [MONITORING - ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
         # Scan option chain for CE if Supertrend is Bullish
         if st_bullish:
@@ -604,7 +599,7 @@ class BankNiftyBot:
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"CE Chain Analysis ({len(positive_signals)}/{len(ce_strikes)} strikes above VWAP):"
@@ -619,15 +614,22 @@ class BankNiftyBot:
                     f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}{atm_marker}"
                 )
 
-            # Entry condition: ATM Premium > VWAP (simple, clean)
+            # Entry condition: ATM Premium > VWAP AND ADX strong enough
             if atm_data['signal']:
-                self.logger.info(
-                    f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
-                    f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                    f"(+{atm_data['vwap_pct']:.1f}%) | "
-                    f"Supertrend Bullish | ADX {current_adx:.1f}"
-                )
-                return 'BUY_CE'
+                if can_trade:
+                    self.logger.info(
+                        f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | "
+                        f"Supertrend Bullish | ADX {current_adx:.1f}"
+                    )
+                    return 'BUY_CE'
+                else:
+                    self.logger.info(
+                        f">>> CE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                    )
 
         # Scan option chain for PE if Supertrend is Bearish
         elif st_bearish:
@@ -661,7 +663,7 @@ class BankNiftyBot:
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"PE Chain Analysis ({len(positive_signals)}/{len(pe_strikes)} strikes above VWAP):"
@@ -676,15 +678,22 @@ class BankNiftyBot:
                     f"Diff: {strike_data['vwap_pct']:+5.1f}% | Vol: {strike_data['volume']:.0f}{atm_marker}"
                 )
 
-            # Entry condition: ATM Premium > VWAP (simple, clean)
+            # Entry condition: ATM Premium > VWAP AND ADX strong enough
             if atm_data['signal']:
-                self.logger.info(
-                    f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
-                    f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                    f"(+{atm_data['vwap_pct']:.1f}%) | "
-                    f"Supertrend Bearish | ADX {current_adx:.1f}"
-                )
-                return 'BUY_PE'
+                if can_trade:
+                    self.logger.info(
+                        f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | "
+                        f"Supertrend Bearish | ADX {current_adx:.1f}"
+                    )
+                    return 'BUY_PE'
+                else:
+                    self.logger.info(
+                        f">>> PE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
+                        f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                    )
 
         return None
 
