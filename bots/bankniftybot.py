@@ -851,6 +851,9 @@ class BankNiftyBot:
             f"Investment: Rs. {investment:,.0f} | SL: Rs. {initial_sl:.2f}"
         )
 
+        # Get entry ADX for trend-aware trailing
+        entry_adx = df['adx'].iloc[-1] if 'adx' in df.columns else 25
+
         return {
             'source': self.name,
             'action': TRANSACTION_BUY,
@@ -862,7 +865,8 @@ class BankNiftyBot:
             'reason': f"{signal_type} - VWAP+ST+ADX confluence",
             'entry_price': premium,
             'entry_spot': current_price,
-            'initial_sl': initial_sl
+            'initial_sl': initial_sl,
+            'entry_adx': entry_adx
         }
 
     def _check_exits(self, df=None):
@@ -927,8 +931,13 @@ class BankNiftyBot:
                 # Get current ADX from the dataframe
                 current_adx = df['adx'].iloc[-1] if 'adx' in df.columns else 25
 
+                # Use entry ADX if available - prevents switching to tight trailing
+                # when we entered during a strong trend but ADX temporarily dips
+                entry_adx = position.get('entry_adx', current_adx)
+                effective_adx = max(entry_adx, current_adx)  # Use higher of entry or current
+
                 # Determine trailing parameters based on trend strength
-                if TREND_AWARE_TRAILING_ENABLED and current_adx >= STRONG_TREND_ADX:
+                if TREND_AWARE_TRAILING_ENABLED and effective_adx >= STRONG_TREND_ADX:
                     # STRONG TREND: Wide trailing to let profits run
                     breakeven_trigger = STRONG_TREND_BREAKEVEN_PERCENT
                     trail_frequency = STRONG_TREND_TRAIL_FREQUENCY
@@ -936,7 +945,7 @@ class BankNiftyBot:
                     max_giveback = STRONG_TREND_MAX_GIVEBACK
                     trend_mode = "STRONG"
                     check_st_flip = STRONG_TREND_EXIT_ON_ST_FLIP
-                elif TREND_AWARE_TRAILING_ENABLED and current_adx <= WEAK_TREND_ADX:
+                elif TREND_AWARE_TRAILING_ENABLED and effective_adx <= WEAK_TREND_ADX:
                     # WEAK/RANGING: Tight trailing to lock profits
                     breakeven_trigger = WEAK_TREND_BREAKEVEN_PERCENT
                     trail_frequency = WEAK_TREND_TRAIL_FREQUENCY
@@ -973,7 +982,7 @@ class BankNiftyBot:
                         self.logger.info(
                             f"{symbol}: Trailing SL from ₹{old_sl:.2f} → ₹{new_sl:.2f} "
                             f"(Locked {locked_profit:.1f}% profit, Current: {profit_pct:.1f}%) "
-                            f"[{trend_mode} trend, ADX={current_adx:.1f}]"
+                            f"[{trend_mode} trend, EntryADX={entry_adx:.1f}, CurrentADX={current_adx:.1f}]"
                         )
 
                     # Max profit protection (dynamic based on trend)
@@ -988,7 +997,7 @@ class BankNiftyBot:
                         self.logger.info(
                             f"{symbol}: Max profit protection SL = ₹{new_sl:.2f} "
                             f"(Max seen: ₹{max_premium:.2f}, protecting {100-max_giveback}% of gains) "
-                            f"[{trend_mode} trend]"
+                            f"[{trend_mode} trend, EntryADX={entry_adx:.1f}]"
                         )
 
                     # In strong trends, also check for Supertrend flip as exit signal
@@ -1080,6 +1089,7 @@ class BankNiftyBot:
             entry_spot = kwargs.get('entry_spot', 0)
             initial_sl = kwargs.get('initial_sl', price * 0.8)
             entry_reason = kwargs.get('reason', 'Manual entry')
+            entry_adx = kwargs.get('entry_adx', 25)  # Default to moderate ADX
 
             self.trade_count += 1
             self.active_positions[symbol] = {
@@ -1090,7 +1100,8 @@ class BankNiftyBot:
                 'current_sl': initial_sl,
                 'quantity': quantity,
                 'entry_time': datetime.datetime.now(),
-                'entry_reason': entry_reason
+                'entry_reason': entry_reason,
+                'entry_adx': entry_adx  # Store entry ADX for trend-aware trailing
             }
             self.max_premium_seen[symbol] = price
 
