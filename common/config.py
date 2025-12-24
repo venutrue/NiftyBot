@@ -156,21 +156,21 @@ SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5mi
 TREND_AWARE_TRAILING_ENABLED = True   # Enable/disable trend-aware trailing
 
 # ADX thresholds for trend classification
-STRONG_TREND_ADX = 30                 # ADX > 30 = strong trend (wide trailing)
-WEAK_TREND_ADX = 25                   # ADX < 25 = weak/ranging (tight trailing)
+STRONG_TREND_ADX = 25                 # ADX > 25 = strong trend (wide trailing)
+WEAK_TREND_ADX = 18                   # ADX < 18 = weak/ranging (tight trailing)
 
-# STRONG TREND parameters (ADX > 30) - Let profits run
+# STRONG TREND parameters (ADX > 25) - Let profits run
 STRONG_TREND_BREAKEVEN_PERCENT = 10   # Move SL to entry at +10% profit
 STRONG_TREND_TRAIL_FREQUENCY = 5      # Trail every 5% gain
 STRONG_TREND_TRAIL_INCREMENT = 3      # Lock 3% profit with each trail step
 STRONG_TREND_MAX_GIVEBACK = 40        # Allow up to 40% giveback in trends
 STRONG_TREND_EXIT_ON_ST_FLIP = True   # Also exit if Supertrend flips
 
-# WEAK/RANGING parameters (ADX < 25) - Lock profits quickly
-WEAK_TREND_BREAKEVEN_PERCENT = 5      # Move SL to entry at +5% profit
+# WEAK/RANGING parameters (ADX < 18) - Lock profits quickly
+WEAK_TREND_BREAKEVEN_PERCENT = 8      # Move SL to entry at +8% profit
 WEAK_TREND_TRAIL_FREQUENCY = 3        # Trail every 3% gain
 WEAK_TREND_TRAIL_INCREMENT = 2        # Lock 2% profit with each trail step
-WEAK_TREND_MAX_GIVEBACK = 30          # Never give back >30% of max profit
+WEAK_TREND_MAX_GIVEBACK = 40          # Never give back >40% of max profit
 
 # Legacy parameters (used when TREND_AWARE_TRAILING_ENABLED = False)
 TRAIL_FREQUENCY = 3                   # Trail stop loss every 3% gain
