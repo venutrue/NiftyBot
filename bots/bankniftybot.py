@@ -37,8 +37,10 @@ from common.config import (
     WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
     # Expiry Day Protection
     SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
-    # Emergency Stop Loss
-    EMERGENCY_SL_PERCENT
+    # Hidden Stop Loss (Anti Stop-Hunting)
+    HIDDEN_SL_ENABLED, HIDDEN_SL_METHOD, EMERGENCY_SL_PERCENT, SL_CANDLE_INTERVAL,
+    # Two-Candle Confirmation & Candle-Low Based SL
+    TWO_CANDLE_EXIT_ENABLED, CANDLE_LOW_SL_ENABLED, SL_BUFFER_PERCENT, TRAIL_ON_NEW_HIGH_ONLY
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
@@ -219,6 +221,97 @@ class BankNiftyBot:
 
         except Exception as e:
             self.logger.error(f"Failed to fetch option data for {symbol}: {str(e)}")
+
+        return None
+
+    def get_option_adx(self, symbol):
+        """
+        Calculate ADX for an option contract.
+
+        Fetches option historical data (including previous day if needed)
+        and calculates ADX. This is useful for index options where the
+        underlying index has no trading volume - the option ADX reflects
+        actual traded price action.
+
+        Args:
+            symbol: Option trading symbol (e.g., BANKNIFTY25DEC59100PE)
+
+        Returns:
+            float: Current ADX value, or None if calculation failed
+        """
+        token = self._get_option_token(symbol)
+        if token is None:
+            return None
+
+        now = datetime.datetime.now()
+        market_open_today = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+
+        # Calculate how many minutes since market open
+        if now < market_open_today:
+            minutes_since_open = 0
+        else:
+            minutes_since_open = int((now - market_open_today).total_seconds() / 60)
+
+        # ADX needs ~30 candles minimum
+        MIN_CANDLES_FOR_ADX = 35
+
+        try:
+            if minutes_since_open < MIN_CANDLES_FOR_ADX:
+                # Fetch previous trading day data for ADX calculation
+                yesterday = now - datetime.timedelta(days=1)
+                while yesterday.weekday() >= 5:  # Skip weekends
+                    yesterday = yesterday - datetime.timedelta(days=1)
+
+                prev_day_start = yesterday.replace(hour=14, minute=30, second=0, microsecond=0)
+                prev_day_end = yesterday.replace(hour=15, minute=30, second=0, microsecond=0)
+
+                prev_data = self.executor.get_historical_data(
+                    instrument_token=token,
+                    from_date=prev_day_start,
+                    to_date=prev_day_end,
+                    interval="minute"
+                )
+
+                today_data = self.executor.get_historical_data(
+                    instrument_token=token,
+                    from_date=market_open_today,
+                    to_date=now,
+                    interval="minute"
+                )
+
+                if prev_data and today_data:
+                    df_prev = pd.DataFrame(prev_data)
+                    df_today = pd.DataFrame(today_data)
+                    df_combined = pd.concat([df_prev, df_today], ignore_index=True)
+                    df_combined = adx(df_combined)
+                    option_adx = df_combined['ADX'].iloc[-1]
+                    if pd.notna(option_adx):
+                        return float(option_adx)
+                elif today_data:
+                    df = pd.DataFrame(today_data)
+                    df = adx(df)
+                    option_adx = df['ADX'].iloc[-1]
+                    if pd.notna(option_adx):
+                        return float(option_adx)
+            else:
+                # Normal case: enough candles from today
+                from_date = now - datetime.timedelta(minutes=120)
+                data = self.executor.get_historical_data(
+                    instrument_token=token,
+                    from_date=from_date,
+                    to_date=now,
+                    interval="minute"
+                )
+
+                if data:
+                    df = pd.DataFrame(data)
+                    df = adx(df)
+                    option_adx = df['ADX'].iloc[-1]
+                    if pd.notna(option_adx):
+                        return float(option_adx)
+
+        except Exception as e:
+            self.logger.debug(f"Failed to calculate option ADX for {symbol}: {str(e)}")
 
         return None
 
@@ -636,17 +729,13 @@ class BankNiftyBot:
             return None
 
         current_price = df['close'].iloc[-1]
-        current_adx = df['ADX'].iloc[-1]
+        spot_adx = df['ADX'].iloc[-1]
         st_bullish = is_supertrend_bullish(df)
         st_bearish = is_supertrend_bearish(df)
 
         # Calculate ATM strike (BANKNIFTY uses 100 step)
         atm_strike = get_atm_strike(current_price, step=BANKNIFTY_STRIKE_STEP)
         st_status = "Bullish" if st_bullish else "Bearish"
-
-        # Check ADX strength - determine if we can trade or just monitor
-        can_trade = current_adx >= ADX_ENTRY_THRESHOLD
-        mode_status = "" if can_trade else f" [MONITORING - ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
         # Scan option chain for CE if Supertrend is Bullish
         if st_bullish:
@@ -655,7 +744,7 @@ class BankNiftyBot:
             if not ce_strikes:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"CE: No option data available"
                 )
                 return None
@@ -670,17 +759,27 @@ class BankNiftyBot:
             if not atm_data:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"CE: ATM data not available"
                 )
                 return None
+
+            # Calculate option ADX for hybrid approach: max(spot_adx, option_adx)
+            option_adx = self.get_option_adx(atm_data['symbol'])
+            if option_adx is None:
+                option_adx = spot_adx  # Fallback to spot ADX if option ADX unavailable
+            effective_adx = max(spot_adx, option_adx) if pd.notna(spot_adx) else option_adx
+
+            # Check ADX strength - determine if we can trade or just monitor
+            can_trade = effective_adx >= ADX_ENTRY_THRESHOLD
+            mode_status = "" if can_trade else f" [MONITORING - ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
             # Count strikes with positive signals (for visibility)
             positive_signals = [s for s in ce_strikes if s['signal']]
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | SpotADX: {spot_adx:.1f} | OptADX: {option_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"CE Chain Analysis ({len(positive_signals)}/{len(ce_strikes)} strikes above VWAP):"
@@ -702,14 +801,14 @@ class BankNiftyBot:
                         f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
                         f"(+{atm_data['vwap_pct']:.1f}%) | "
-                        f"Supertrend Bullish | ADX {current_adx:.1f}"
+                        f"Supertrend Bullish | ADX {effective_adx:.1f} (Spot:{spot_adx:.1f}/Opt:{option_adx:.1f})"
                     )
                     return 'BUY_CE'
                 else:
                     self.logger.info(
                         f">>> CE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
                     )
 
         # Scan option chain for PE if Supertrend is Bearish
@@ -719,7 +818,7 @@ class BankNiftyBot:
             if not pe_strikes:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"PE: No option data available"
                 )
                 return None
@@ -734,17 +833,27 @@ class BankNiftyBot:
             if not atm_data:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"PE: ATM data not available"
                 )
                 return None
+
+            # Calculate option ADX for hybrid approach: max(spot_adx, option_adx)
+            option_adx = self.get_option_adx(atm_data['symbol'])
+            if option_adx is None:
+                option_adx = spot_adx  # Fallback to spot ADX if option ADX unavailable
+            effective_adx = max(spot_adx, option_adx) if pd.notna(spot_adx) else option_adx
+
+            # Check ADX strength - determine if we can trade or just monitor
+            can_trade = effective_adx >= ADX_ENTRY_THRESHOLD
+            mode_status = "" if can_trade else f" [MONITORING - ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
             # Count strikes with positive signals (for visibility)
             positive_signals = [s for s in pe_strikes if s['signal']]
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | SpotADX: {spot_adx:.1f} | OptADX: {option_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"PE Chain Analysis ({len(positive_signals)}/{len(pe_strikes)} strikes above VWAP):"
@@ -766,14 +875,14 @@ class BankNiftyBot:
                         f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
                         f"(+{atm_data['vwap_pct']:.1f}%) | "
-                        f"Supertrend Bearish | ADX {current_adx:.1f}"
+                        f"Supertrend Bearish | ADX {effective_adx:.1f} (Spot:{spot_adx:.1f}/Opt:{option_adx:.1f})"
                     )
                     return 'BUY_PE'
                 else:
                     self.logger.info(
                         f">>> PE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
                     )
 
         return None
@@ -784,6 +893,52 @@ class BankNiftyBot:
             return self.executor.get_ltp(symbol, EXCHANGE_NFO)
         except Exception as e:
             self.logger.error(f"Failed to get premium for {symbol}: {str(e)}")
+            return None
+
+    def get_option_candles(self, symbol, n_candles=3, interval='5minute'):
+        """
+        Get recent option premium candles for technical SL and candle close confirmation.
+
+        Args:
+            symbol: Option symbol (e.g., 'BANKNIFTY25DEC59000CE')
+            n_candles: Number of candles to fetch (default 3)
+            interval: Candle interval (default '5minute')
+
+        Returns:
+            List of candle dicts with 'high', 'low', 'close', 'open', 'date' keys
+            or None if failed
+        """
+        try:
+            # Get instrument token for the option
+            token = self._get_option_token(symbol)
+            if not token:
+                self.logger.warning(f"Could not get token for {symbol}")
+                return None
+
+            # Calculate time range (fetch extra candles for safety)
+            now = datetime.datetime.now()
+            # For 5-minute candles, go back n_candles * 5 + 10 minutes
+            minutes_back = (n_candles + 2) * 5 + 10
+            from_time = now - datetime.timedelta(minutes=minutes_back)
+
+            # Fetch historical data
+            candles = self.executor.get_historical_data(
+                instrument_token=token,
+                from_date=from_time,
+                to_date=now,
+                interval=interval
+            )
+
+            if not candles or len(candles) < 2:
+                self.logger.debug(f"Insufficient candles for {symbol}: got {len(candles) if candles else 0}")
+                return None
+
+            # Return last n_candles (excluding current incomplete candle)
+            # Kite returns completed candles, so last one should be complete
+            return candles[-n_candles:] if len(candles) >= n_candles else candles
+
+        except Exception as e:
+            self.logger.error(f"Failed to get option candles for {symbol}: {str(e)}")
             return None
 
     def scan(self):
@@ -900,8 +1055,30 @@ class BankNiftyBot:
         lots = self.calculate_lots(premium)
         quantity = lots * BANKNIFTY_LOT_SIZE
 
-        # Calculate initial stop loss (20% of premium)
-        initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
+        # Calculate initial stop loss
+        entry_candle_low = premium  # Default to premium if candle data unavailable
+
+        if CANDLE_LOW_SL_ENABLED:
+            # Fetch entry candle to get the low
+            entry_candles = self.get_option_candles(symbol, n_candles=2, interval=SL_CANDLE_INTERVAL)
+            if entry_candles and len(entry_candles) >= 1:
+                # Use the most recent closed candle's low
+                entry_candle_low = entry_candles[-1].get('low', premium)
+                # Apply buffer below candle low
+                initial_sl = entry_candle_low * (1 - SL_BUFFER_PERCENT / 100)
+                self.logger.info(
+                    f"{symbol}: Using candle-low based SL | "
+                    f"Candle Low: ₹{entry_candle_low:.2f} | SL: ₹{initial_sl:.2f} (with {SL_BUFFER_PERCENT}% buffer)"
+                )
+            else:
+                # Fallback to percentage-based SL
+                initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
+                self.logger.warning(
+                    f"{symbol}: Could not get entry candle, using percentage SL: ₹{initial_sl:.2f}"
+                )
+        else:
+            # Use traditional percentage-based SL
+            initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
 
         # Calculate investment
         investment = premium * quantity
@@ -937,6 +1114,7 @@ class BankNiftyBot:
             'reason': f"{signal_type} - VWAP+ST+ADX confluence",
             'entry_price': premium,
             'entry_spot': current_price,
+            'entry_candle_low': entry_candle_low,
             'initial_sl': initial_sl,
             'entry_adx': entry_adx
         }
@@ -976,18 +1154,131 @@ class BankNiftyBot:
             # Determine exit reason
             exit_reason = None
             new_sl = current_sl
+            option_type = 'CE' if is_call else 'PE'
+
+            # Fetch option candles once (used for hidden SL confirmation and trailing)
+            option_candles = None
+            candle_close = current_premium  # Default to LTP
+            candle_high = current_premium
+            candle_low = current_premium
+            candle_time = None
+
+            if HIDDEN_SL_ENABLED or TWO_CANDLE_EXIT_ENABLED or TRAIL_ON_NEW_HIGH_ONLY:
+                option_candles = self.get_option_candles(symbol, n_candles=3, interval=SL_CANDLE_INTERVAL)
+                if option_candles and len(option_candles) >= 1:
+                    last_closed_candle = option_candles[-1]
+                    candle_close = last_closed_candle.get('close', current_premium)
+                    candle_high = last_closed_candle.get('high', current_premium)
+                    candle_low = last_closed_candle.get('low', current_premium)
+                    candle_time = last_closed_candle.get('date', None)
+
+            # Check if this is a NEW candle (not already processed)
+            last_processed_time = position.get('last_candle_time')
+            is_new_candle = (candle_time is not None and candle_time != last_processed_time)
+
+            # ============================================
+            # TRAIL-ON-NEW-HIGH LOGIC
+            # ============================================
+            if TRAIL_ON_NEW_HIGH_ONLY and is_new_candle and option_candles:
+                highest_high = position.get('highest_high', entry_premium)
+
+                if candle_high > highest_high:
+                    position['highest_high'] = candle_high
+
+                    if len(option_candles) >= 2:
+                        prev_candle = option_candles[-2]
+                        prev_candle_low = prev_candle.get('low', candle_low)
+                        new_trail_sl = prev_candle_low * (1 - SL_BUFFER_PERCENT / 100)
+
+                        if new_trail_sl > current_sl:
+                            old_sl = current_sl
+                            position['current_sl'] = new_trail_sl
+                            position['highest_high_candle_low'] = prev_candle_low
+                            current_sl = new_trail_sl
+
+                            self.logger.info(
+                                f"{symbol}: NEW HIGH ₹{candle_high:.2f} | "
+                                f"Trailing SL: ₹{old_sl:.2f} → ₹{new_trail_sl:.2f} "
+                                f"(prev candle low: ₹{prev_candle_low:.2f})"
+                            )
+
+            if is_new_candle:
+                position['last_candle_time'] = candle_time
 
             # ============================================
             # EMERGENCY STOP LOSS (LTP-based, no df needed)
             # ============================================
-            # If loss exceeds emergency threshold, exit immediately
-            # This protects against flash crashes even when df fetch fails
             if loss_pct >= EMERGENCY_SL_PERCENT:
                 exit_reason = f"EMERGENCY SL hit (Loss: {loss_pct:.1f}% >= {EMERGENCY_SL_PERCENT}%)"
                 self.logger.warning(f"{symbol}: {exit_reason}")
 
-            # Phase 1: Check initial stop loss (LTP-based)
-            if exit_reason is None and current_premium <= initial_sl:
+            # ============================================
+            # HIDDEN STOP LOSS WITH TWO-CANDLE CONFIRMATION
+            # ============================================
+            elif HIDDEN_SL_ENABLED and profit_pct < 0:
+                if option_candles and len(option_candles) >= 2:
+                    effective_sl = initial_sl
+
+                    if candle_close <= effective_sl:
+                        if TWO_CANDLE_EXIT_ENABLED and is_new_candle:
+                            sl_warning_count = position.get('sl_warning_count', 0) + 1
+                            position['sl_warning_count'] = sl_warning_count
+
+                            if sl_warning_count >= 2:
+                                exit_reason = (
+                                    f"Hidden SL CONFIRMED (2 candles) - "
+                                    f"(Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f})"
+                                )
+                            else:
+                                # Track what old logic would have done for comparison
+                                old_logic_exit_price = current_premium
+                                old_logic_pnl = (old_logic_exit_price - entry_premium) * position['quantity']
+                                position['old_logic_would_exit_at'] = old_logic_exit_price
+                                position['old_logic_would_exit_pnl'] = old_logic_pnl
+
+                                self.logger.warning(
+                                    f"{symbol}: SL WARNING ({sl_warning_count}/2) | "
+                                    f"Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f} | "
+                                    f"Waiting for 2nd candle..."
+                                )
+                                self.logger.info(
+                                    f"📊 COMPARISON: OLD LOGIC would EXIT now @ ₹{old_logic_exit_price:.2f} | "
+                                    f"P&L: ₹{old_logic_pnl:,.0f} | NEW LOGIC: HOLDING..."
+                                )
+                        elif not TWO_CANDLE_EXIT_ENABLED:
+                            exit_reason = (
+                                f"Hidden SL triggered - Candle CLOSED below SL "
+                                f"(Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f})"
+                            )
+                    else:
+                        if position.get('sl_warning_count', 0) > 0 and is_new_candle:
+                            # We held through the first candle warning and price recovered!
+                            old_exit_price = position.get('old_logic_would_exit_at', 0)
+                            old_exit_pnl = position.get('old_logic_would_exit_pnl', 0)
+                            current_pnl = (current_premium - entry_premium) * position['quantity']
+                            pnl_saved = current_pnl - old_exit_pnl
+
+                            self.logger.info(
+                                f"{symbol}: SL warning RESET | "
+                                f"Candle closed at ₹{candle_close:.2f} (above SL ₹{effective_sl:.2f})"
+                            )
+                            if old_exit_price > 0:
+                                self.logger.info(
+                                    f"📊 FALSE SIGNAL AVOIDED! | "
+                                    f"OLD LOGIC would have exited @ ₹{old_exit_price:.2f} (P&L: ₹{old_exit_pnl:,.0f}) | "
+                                    f"CURRENT: ₹{current_premium:.2f} (P&L: ₹{current_pnl:,.0f}) | "
+                                    f"SAVED: ₹{pnl_saved:,.0f}"
+                                )
+                                # Clear the tracking once logged
+                                position.pop('old_logic_would_exit_at', None)
+                                position.pop('old_logic_would_exit_pnl', None)
+
+                            position['sl_warning_count'] = 0
+                else:
+                    if current_premium <= initial_sl:
+                        exit_reason = f"Initial SL hit - fallback (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
+
+            elif not HIDDEN_SL_ENABLED and exit_reason is None and current_premium <= initial_sl:
                 exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing
@@ -1109,9 +1400,61 @@ class BankNiftyBot:
                     if current_premium <= new_sl:
                         exit_reason = f"Trailing SL hit (Premium: {current_premium:.2f} <= SL: {new_sl:.2f})"
 
-            # Check current SL
+            # Check current SL (trailing SL)
+            # Apply two-candle confirmation if enabled
             if current_premium <= current_sl and exit_reason is None:
-                exit_reason = f"Stop loss hit (Premium: {current_premium:.2f} <= SL: {current_sl:.2f})"
+                if HIDDEN_SL_ENABLED and option_candles:
+                    if candle_close <= current_sl:
+                        if TWO_CANDLE_EXIT_ENABLED and is_new_candle:
+                            sl_warning_count = position.get('sl_warning_count', 0) + 1
+                            position['sl_warning_count'] = sl_warning_count
+
+                            if sl_warning_count >= 2:
+                                exit_reason = f"Trailing SL CONFIRMED (2 candles) - (Close: {candle_close:.2f} <= SL: {current_sl:.2f})"
+                            else:
+                                # Track what old logic would have done for comparison
+                                old_logic_exit_price = current_premium
+                                old_logic_pnl = (old_logic_exit_price - entry_premium) * position['quantity']
+                                position['old_logic_would_exit_at'] = old_logic_exit_price
+                                position['old_logic_would_exit_pnl'] = old_logic_pnl
+
+                                self.logger.warning(
+                                    f"{symbol}: Trailing SL WARNING ({sl_warning_count}/2) | "
+                                    f"Close: ₹{candle_close:.2f} <= SL: ₹{current_sl:.2f} | "
+                                    f"Waiting for 2nd candle..."
+                                )
+                                self.logger.info(
+                                    f"📊 COMPARISON: OLD LOGIC would EXIT now @ ₹{old_logic_exit_price:.2f} | "
+                                    f"P&L: ₹{old_logic_pnl:,.0f} | NEW LOGIC: HOLDING..."
+                                )
+                        elif not TWO_CANDLE_EXIT_ENABLED:
+                            exit_reason = f"Trailing SL hit - Candle CLOSED (Close: {candle_close:.2f} <= SL: {current_sl:.2f})"
+                    else:
+                        if position.get('sl_warning_count', 0) > 0 and is_new_candle:
+                            # We held through the first candle warning and price recovered!
+                            old_exit_price = position.get('old_logic_would_exit_at', 0)
+                            old_exit_pnl = position.get('old_logic_would_exit_pnl', 0)
+                            current_pnl = (current_premium - entry_premium) * position['quantity']
+                            pnl_saved = current_pnl - old_exit_pnl
+
+                            self.logger.info(
+                                f"{symbol}: Trailing SL warning RESET | "
+                                f"Candle closed at ₹{candle_close:.2f} (above SL ₹{current_sl:.2f})"
+                            )
+                            if old_exit_price > 0:
+                                self.logger.info(
+                                    f"📊 FALSE SIGNAL AVOIDED! | "
+                                    f"OLD LOGIC would have exited @ ₹{old_exit_price:.2f} (P&L: ₹{old_exit_pnl:,.0f}) | "
+                                    f"CURRENT: ₹{current_premium:.2f} (P&L: ₹{current_pnl:,.0f}) | "
+                                    f"SAVED: ₹{pnl_saved:,.0f}"
+                                )
+                                # Clear the tracking once logged
+                                position.pop('old_logic_would_exit_at', None)
+                                position.pop('old_logic_would_exit_pnl', None)
+
+                            position['sl_warning_count'] = 0
+                else:
+                    exit_reason = f"Stop loss hit (Premium: {current_premium:.2f} <= SL: {current_sl:.2f})"
 
             # Generate exit signal if needed
             if exit_reason:
@@ -1162,6 +1505,7 @@ class BankNiftyBot:
             initial_sl = kwargs.get('initial_sl', price * 0.8)
             entry_reason = kwargs.get('reason', 'Manual entry')
             entry_adx = kwargs.get('entry_adx', 25)  # Default to moderate ADX
+            entry_candle_low = kwargs.get('entry_candle_low', price)  # Candle low at entry
 
             self.trade_count += 1
             self.active_positions[symbol] = {
@@ -1173,7 +1517,12 @@ class BankNiftyBot:
                 'quantity': quantity,
                 'entry_time': datetime.datetime.now(),
                 'entry_reason': entry_reason,
-                'entry_adx': entry_adx  # Store entry ADX for trend-aware trailing
+                'entry_adx': entry_adx,  # Store entry ADX for trend-aware trailing
+                # New fields for two-candle confirmation and trail-on-new-high
+                'sl_warning_count': 0,  # Consecutive candles closed below SL
+                'highest_high': price,  # Highest premium seen (for trail-on-new-high)
+                'highest_high_candle_low': entry_candle_low,  # Candle low when highest high was made
+                'last_candle_time': None  # Track last processed candle to avoid double-counting
             }
             self.max_premium_seen[symbol] = price
 
