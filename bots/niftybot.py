@@ -1467,10 +1467,20 @@ class NiftyBot:
                                     )
                                 else:
                                     # First candle closed below SL - WARNING, hold position
+                                    # Track what old logic would have done for comparison
+                                    old_logic_exit_price = current_premium
+                                    old_logic_pnl = (old_logic_exit_price - entry_premium) * position['quantity']
+                                    position['old_logic_would_exit_at'] = old_logic_exit_price
+                                    position['old_logic_would_exit_pnl'] = old_logic_pnl
+
                                     self.logger.warning(
                                         f"{symbol}: SL WARNING (candle {sl_warning_count}/2) | "
                                         f"Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f} | "
                                         f"Waiting for 2nd candle confirmation..."
+                                    )
+                                    self.logger.info(
+                                        f"📊 COMPARISON: OLD LOGIC would EXIT now @ ₹{old_logic_exit_price:.2f} | "
+                                        f"P&L: ₹{old_logic_pnl:,.0f} | NEW LOGIC: HOLDING..."
                                     )
                             elif not TWO_CANDLE_EXIT_ENABLED:
                                 # Original single-candle exit
@@ -1485,10 +1495,28 @@ class NiftyBot:
                         else:
                             # Candle closed ABOVE SL - reset warning count
                             if position.get('sl_warning_count', 0) > 0:
+                                # We held through the first candle warning and price recovered!
+                                # Log the FALSE SIGNAL AVOIDED with P&L comparison
+                                old_exit_price = position.get('old_logic_would_exit_at', 0)
+                                old_exit_pnl = position.get('old_logic_would_exit_pnl', 0)
+                                current_pnl = (current_premium - entry_premium) * position['quantity']
+                                pnl_saved = current_pnl - old_exit_pnl
+
                                 self.logger.info(
                                     f"{symbol}: SL warning RESET | "
                                     f"Candle closed at ₹{candle_close:.2f} (above SL ₹{effective_sl:.2f})"
                                 )
+                                if old_exit_price > 0:
+                                    self.logger.info(
+                                        f"📊 FALSE SIGNAL AVOIDED! | "
+                                        f"OLD LOGIC would have exited @ ₹{old_exit_price:.2f} (P&L: ₹{old_exit_pnl:,.0f}) | "
+                                        f"CURRENT: ₹{current_premium:.2f} (P&L: ₹{current_pnl:,.0f}) | "
+                                        f"SAVED: ₹{pnl_saved:,.0f}"
+                                    )
+                                    # Clear the tracking once logged
+                                    position.pop('old_logic_would_exit_at', None)
+                                    position.pop('old_logic_would_exit_pnl', None)
+
                                 position['sl_warning_count'] = 0
 
                             # Log that we're watching (helpful for debugging)
@@ -1642,20 +1670,47 @@ class NiftyBot:
                             if sl_warning_count >= 2:
                                 exit_reason = f"Trailing SL CONFIRMED (2 candles) - (Close: {candle_close:.2f} <= SL: {current_sl:.2f})"
                             else:
+                                # Track what old logic would have done for comparison
+                                old_logic_exit_price = current_premium
+                                old_logic_pnl = (old_logic_exit_price - entry_premium) * position['quantity']
+                                position['old_logic_would_exit_at'] = old_logic_exit_price
+                                position['old_logic_would_exit_pnl'] = old_logic_pnl
+
                                 self.logger.warning(
                                     f"{symbol}: Trailing SL WARNING ({sl_warning_count}/2) | "
                                     f"Close: ₹{candle_close:.2f} <= SL: ₹{current_sl:.2f} | "
                                     f"Waiting for 2nd candle..."
+                                )
+                                self.logger.info(
+                                    f"📊 COMPARISON: OLD LOGIC would EXIT now @ ₹{old_logic_exit_price:.2f} | "
+                                    f"P&L: ₹{old_logic_pnl:,.0f} | NEW LOGIC: HOLDING..."
                                 )
                         elif not TWO_CANDLE_EXIT_ENABLED:
                             exit_reason = f"Trailing SL hit - Candle CLOSED (Close: {candle_close:.2f} <= SL: {current_sl:.2f})"
                     else:
                         # Candle closed above SL - reset warning count
                         if position.get('sl_warning_count', 0) > 0 and is_new_candle:
+                            # We held through the first candle warning and price recovered!
+                            old_exit_price = position.get('old_logic_would_exit_at', 0)
+                            old_exit_pnl = position.get('old_logic_would_exit_pnl', 0)
+                            current_pnl = (current_premium - entry_premium) * position['quantity']
+                            pnl_saved = current_pnl - old_exit_pnl
+
                             self.logger.info(
                                 f"{symbol}: Trailing SL warning RESET | "
                                 f"Candle closed at ₹{candle_close:.2f} (above SL ₹{current_sl:.2f})"
                             )
+                            if old_exit_price > 0:
+                                self.logger.info(
+                                    f"📊 FALSE SIGNAL AVOIDED! | "
+                                    f"OLD LOGIC would have exited @ ₹{old_exit_price:.2f} (P&L: ₹{old_exit_pnl:,.0f}) | "
+                                    f"CURRENT: ₹{current_premium:.2f} (P&L: ₹{current_pnl:,.0f}) | "
+                                    f"SAVED: ₹{pnl_saved:,.0f}"
+                                )
+                                # Clear the tracking once logged
+                                position.pop('old_logic_would_exit_at', None)
+                                position.pop('old_logic_would_exit_pnl', None)
+
                             position['sl_warning_count'] = 0
                 else:
                     exit_reason = f"Stop loss hit (Premium: {current_premium:.2f} <= SL: {current_sl:.2f})"
