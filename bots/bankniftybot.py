@@ -37,8 +37,10 @@ from common.config import (
     WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
     # Expiry Day Protection
     SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
-    # Emergency Stop Loss
-    EMERGENCY_SL_PERCENT
+    # Hidden Stop Loss (Anti Stop-Hunting)
+    HIDDEN_SL_ENABLED, HIDDEN_SL_METHOD, EMERGENCY_SL_PERCENT, SL_CANDLE_INTERVAL,
+    # Two-Candle Confirmation & Candle-Low Based SL
+    TWO_CANDLE_EXIT_ENABLED, CANDLE_LOW_SL_ENABLED, SL_BUFFER_PERCENT, TRAIL_ON_NEW_HIGH_ONLY
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
@@ -893,6 +895,52 @@ class BankNiftyBot:
             self.logger.error(f"Failed to get premium for {symbol}: {str(e)}")
             return None
 
+    def get_option_candles(self, symbol, n_candles=3, interval='5minute'):
+        """
+        Get recent option premium candles for technical SL and candle close confirmation.
+
+        Args:
+            symbol: Option symbol (e.g., 'BANKNIFTY25DEC59000CE')
+            n_candles: Number of candles to fetch (default 3)
+            interval: Candle interval (default '5minute')
+
+        Returns:
+            List of candle dicts with 'high', 'low', 'close', 'open', 'date' keys
+            or None if failed
+        """
+        try:
+            # Get instrument token for the option
+            token = self._get_option_token(symbol)
+            if not token:
+                self.logger.warning(f"Could not get token for {symbol}")
+                return None
+
+            # Calculate time range (fetch extra candles for safety)
+            now = datetime.datetime.now()
+            # For 5-minute candles, go back n_candles * 5 + 10 minutes
+            minutes_back = (n_candles + 2) * 5 + 10
+            from_time = now - datetime.timedelta(minutes=minutes_back)
+
+            # Fetch historical data
+            candles = self.executor.get_historical_data(
+                instrument_token=token,
+                from_date=from_time,
+                to_date=now,
+                interval=interval
+            )
+
+            if not candles or len(candles) < 2:
+                self.logger.debug(f"Insufficient candles for {symbol}: got {len(candles) if candles else 0}")
+                return None
+
+            # Return last n_candles (excluding current incomplete candle)
+            # Kite returns completed candles, so last one should be complete
+            return candles[-n_candles:] if len(candles) >= n_candles else candles
+
+        except Exception as e:
+            self.logger.error(f"Failed to get option candles for {symbol}: {str(e)}")
+            return None
+
     def scan(self):
         """Main scanning function. Called by run.py."""
         signals = []
@@ -1007,8 +1055,30 @@ class BankNiftyBot:
         lots = self.calculate_lots(premium)
         quantity = lots * BANKNIFTY_LOT_SIZE
 
-        # Calculate initial stop loss (20% of premium)
-        initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
+        # Calculate initial stop loss
+        entry_candle_low = premium  # Default to premium if candle data unavailable
+
+        if CANDLE_LOW_SL_ENABLED:
+            # Fetch entry candle to get the low
+            entry_candles = self.get_option_candles(symbol, n_candles=2, interval=SL_CANDLE_INTERVAL)
+            if entry_candles and len(entry_candles) >= 1:
+                # Use the most recent closed candle's low
+                entry_candle_low = entry_candles[-1].get('low', premium)
+                # Apply buffer below candle low
+                initial_sl = entry_candle_low * (1 - SL_BUFFER_PERCENT / 100)
+                self.logger.info(
+                    f"{symbol}: Using candle-low based SL | "
+                    f"Candle Low: ₹{entry_candle_low:.2f} | SL: ₹{initial_sl:.2f} (with {SL_BUFFER_PERCENT}% buffer)"
+                )
+            else:
+                # Fallback to percentage-based SL
+                initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
+                self.logger.warning(
+                    f"{symbol}: Could not get entry candle, using percentage SL: ₹{initial_sl:.2f}"
+                )
+        else:
+            # Use traditional percentage-based SL
+            initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
 
         # Calculate investment
         investment = premium * quantity
@@ -1044,6 +1114,7 @@ class BankNiftyBot:
             'reason': f"{signal_type} - VWAP+ST+ADX confluence",
             'entry_price': premium,
             'entry_spot': current_price,
+            'entry_candle_low': entry_candle_low,
             'initial_sl': initial_sl,
             'entry_adx': entry_adx
         }
@@ -1083,18 +1154,104 @@ class BankNiftyBot:
             # Determine exit reason
             exit_reason = None
             new_sl = current_sl
+            option_type = 'CE' if is_call else 'PE'
+
+            # Fetch option candles once (used for hidden SL confirmation and trailing)
+            option_candles = None
+            candle_close = current_premium  # Default to LTP
+            candle_high = current_premium
+            candle_low = current_premium
+            candle_time = None
+
+            if HIDDEN_SL_ENABLED or TWO_CANDLE_EXIT_ENABLED or TRAIL_ON_NEW_HIGH_ONLY:
+                option_candles = self.get_option_candles(symbol, n_candles=3, interval=SL_CANDLE_INTERVAL)
+                if option_candles and len(option_candles) >= 1:
+                    last_closed_candle = option_candles[-1]
+                    candle_close = last_closed_candle.get('close', current_premium)
+                    candle_high = last_closed_candle.get('high', current_premium)
+                    candle_low = last_closed_candle.get('low', current_premium)
+                    candle_time = last_closed_candle.get('date', None)
+
+            # Check if this is a NEW candle (not already processed)
+            last_processed_time = position.get('last_candle_time')
+            is_new_candle = (candle_time is not None and candle_time != last_processed_time)
+
+            # ============================================
+            # TRAIL-ON-NEW-HIGH LOGIC
+            # ============================================
+            if TRAIL_ON_NEW_HIGH_ONLY and is_new_candle and option_candles:
+                highest_high = position.get('highest_high', entry_premium)
+
+                if candle_high > highest_high:
+                    position['highest_high'] = candle_high
+
+                    if len(option_candles) >= 2:
+                        prev_candle = option_candles[-2]
+                        prev_candle_low = prev_candle.get('low', candle_low)
+                        new_trail_sl = prev_candle_low * (1 - SL_BUFFER_PERCENT / 100)
+
+                        if new_trail_sl > current_sl:
+                            old_sl = current_sl
+                            position['current_sl'] = new_trail_sl
+                            position['highest_high_candle_low'] = prev_candle_low
+                            current_sl = new_trail_sl
+
+                            self.logger.info(
+                                f"{symbol}: NEW HIGH ₹{candle_high:.2f} | "
+                                f"Trailing SL: ₹{old_sl:.2f} → ₹{new_trail_sl:.2f} "
+                                f"(prev candle low: ₹{prev_candle_low:.2f})"
+                            )
+
+            if is_new_candle:
+                position['last_candle_time'] = candle_time
 
             # ============================================
             # EMERGENCY STOP LOSS (LTP-based, no df needed)
             # ============================================
-            # If loss exceeds emergency threshold, exit immediately
-            # This protects against flash crashes even when df fetch fails
             if loss_pct >= EMERGENCY_SL_PERCENT:
                 exit_reason = f"EMERGENCY SL hit (Loss: {loss_pct:.1f}% >= {EMERGENCY_SL_PERCENT}%)"
                 self.logger.warning(f"{symbol}: {exit_reason}")
 
-            # Phase 1: Check initial stop loss (LTP-based)
-            if exit_reason is None and current_premium <= initial_sl:
+            # ============================================
+            # HIDDEN STOP LOSS WITH TWO-CANDLE CONFIRMATION
+            # ============================================
+            elif HIDDEN_SL_ENABLED and profit_pct < 0:
+                if option_candles and len(option_candles) >= 2:
+                    effective_sl = initial_sl
+
+                    if candle_close <= effective_sl:
+                        if TWO_CANDLE_EXIT_ENABLED and is_new_candle:
+                            sl_warning_count = position.get('sl_warning_count', 0) + 1
+                            position['sl_warning_count'] = sl_warning_count
+
+                            if sl_warning_count >= 2:
+                                exit_reason = (
+                                    f"Hidden SL CONFIRMED (2 candles) - "
+                                    f"(Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f})"
+                                )
+                            else:
+                                self.logger.warning(
+                                    f"{symbol}: SL WARNING ({sl_warning_count}/2) | "
+                                    f"Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f} | "
+                                    f"Waiting for 2nd candle..."
+                                )
+                        elif not TWO_CANDLE_EXIT_ENABLED:
+                            exit_reason = (
+                                f"Hidden SL triggered - Candle CLOSED below SL "
+                                f"(Close: ₹{candle_close:.2f} <= SL: ₹{effective_sl:.2f})"
+                            )
+                    else:
+                        if position.get('sl_warning_count', 0) > 0 and is_new_candle:
+                            self.logger.info(
+                                f"{symbol}: SL warning RESET | "
+                                f"Candle closed at ₹{candle_close:.2f} (above SL ₹{effective_sl:.2f})"
+                            )
+                            position['sl_warning_count'] = 0
+                else:
+                    if current_premium <= initial_sl:
+                        exit_reason = f"Initial SL hit - fallback (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
+
+            elif not HIDDEN_SL_ENABLED and exit_reason is None and current_premium <= initial_sl:
                 exit_reason = f"Initial SL hit (Premium: {current_premium:.2f} <= SL: {initial_sl:.2f})"
 
             # Phase 2: Dynamic progressive trailing
@@ -1216,9 +1373,30 @@ class BankNiftyBot:
                     if current_premium <= new_sl:
                         exit_reason = f"Trailing SL hit (Premium: {current_premium:.2f} <= SL: {new_sl:.2f})"
 
-            # Check current SL
+            # Check current SL (trailing SL)
+            # Apply two-candle confirmation if enabled
             if current_premium <= current_sl and exit_reason is None:
-                exit_reason = f"Stop loss hit (Premium: {current_premium:.2f} <= SL: {current_sl:.2f})"
+                if HIDDEN_SL_ENABLED and option_candles:
+                    if candle_close <= current_sl:
+                        if TWO_CANDLE_EXIT_ENABLED and is_new_candle:
+                            sl_warning_count = position.get('sl_warning_count', 0) + 1
+                            position['sl_warning_count'] = sl_warning_count
+
+                            if sl_warning_count >= 2:
+                                exit_reason = f"Trailing SL CONFIRMED (2 candles) - (Close: {candle_close:.2f} <= SL: {current_sl:.2f})"
+                            else:
+                                self.logger.warning(
+                                    f"{symbol}: Trailing SL WARNING ({sl_warning_count}/2) | "
+                                    f"Close: ₹{candle_close:.2f} <= SL: ₹{current_sl:.2f}"
+                                )
+                        elif not TWO_CANDLE_EXIT_ENABLED:
+                            exit_reason = f"Trailing SL hit - Candle CLOSED (Close: {candle_close:.2f} <= SL: {current_sl:.2f})"
+                    else:
+                        if position.get('sl_warning_count', 0) > 0 and is_new_candle:
+                            self.logger.info(f"{symbol}: Trailing SL warning RESET")
+                            position['sl_warning_count'] = 0
+                else:
+                    exit_reason = f"Stop loss hit (Premium: {current_premium:.2f} <= SL: {current_sl:.2f})"
 
             # Generate exit signal if needed
             if exit_reason:
@@ -1269,6 +1447,7 @@ class BankNiftyBot:
             initial_sl = kwargs.get('initial_sl', price * 0.8)
             entry_reason = kwargs.get('reason', 'Manual entry')
             entry_adx = kwargs.get('entry_adx', 25)  # Default to moderate ADX
+            entry_candle_low = kwargs.get('entry_candle_low', price)  # Candle low at entry
 
             self.trade_count += 1
             self.active_positions[symbol] = {
@@ -1280,7 +1459,12 @@ class BankNiftyBot:
                 'quantity': quantity,
                 'entry_time': datetime.datetime.now(),
                 'entry_reason': entry_reason,
-                'entry_adx': entry_adx  # Store entry ADX for trend-aware trailing
+                'entry_adx': entry_adx,  # Store entry ADX for trend-aware trailing
+                # New fields for two-candle confirmation and trail-on-new-high
+                'sl_warning_count': 0,  # Consecutive candles closed below SL
+                'highest_high': price,  # Highest premium seen (for trail-on-new-high)
+                'highest_high_candle_low': entry_candle_low,  # Candle low when highest high was made
+                'last_candle_time': None  # Track last processed candle to avoid double-counting
             }
             self.max_premium_seen[symbol] = price
 

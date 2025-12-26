@@ -147,6 +147,19 @@ EMERGENCY_SL_PERCENT = 20             # Emergency exit if LTP drops 20%+ (no can
 SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5minute recommended)
 
 ##############################################
+# TWO-CANDLE CONFIRMATION & CANDLE-LOW BASED SL
+##############################################
+# Enhanced exit logic to reduce false signals:
+# 1. Initial SL: Set below entry candle's low (not arbitrary percentage)
+# 2. Trailing: Only trail when new high is made (not on every uptick)
+# 3. Exit: Require 2 consecutive candle closes below SL (not just 1)
+
+TWO_CANDLE_EXIT_ENABLED = True        # Require 2 consecutive candle closes below SL to exit
+CANDLE_LOW_SL_ENABLED = True          # Use entry candle low as initial SL (not percentage)
+SL_BUFFER_PERCENT = 1.0               # Buffer below candle low for SL (1% below candle low)
+TRAIL_ON_NEW_HIGH_ONLY = True         # Only trail SL when price makes a new high
+
+##############################################
 # TREND-AWARE TRAILING STOP LOSS
 ##############################################
 # Adapts trailing behavior based on trend strength (ADX)
