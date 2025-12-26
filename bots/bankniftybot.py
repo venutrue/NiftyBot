@@ -423,26 +423,98 @@ class BankNiftyBot:
 
 
     def fetch_data(self):
-        """Fetch BANKNIFTY minute data with all indicators."""
+        """Fetch BANKNIFTY minute data with all indicators.
+
+        Handles early market hours by fetching previous day's data when needed
+        to ensure ADX calculation has enough candles (requires ~30 candles minimum).
+        """
         now = datetime.datetime.now()
-        from_date = now - datetime.timedelta(minutes=120)
+        market_open_today = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+
+        # Calculate how many minutes since market open
+        if now < market_open_today:
+            minutes_since_open = 0
+        else:
+            minutes_since_open = int((now - market_open_today).total_seconds() / 60)
+
+        # ADX needs ~30 candles minimum (14 for TR/DM smoothing + 14 for DX smoothing)
+        MIN_CANDLES_FOR_ADX = 35
 
         try:
-            data = self.executor.get_historical_data(
-                instrument_token=BANKNIFTY_TOKEN,
-                from_date=from_date,
-                to_date=now,
-                interval="minute"
-            )
+            # If we don't have enough candles from today, fetch yesterday's data too
+            if minutes_since_open < MIN_CANDLES_FOR_ADX:
+                # Fetch previous trading day data (last 60 minutes of trading: 14:30-15:30)
+                yesterday = now - datetime.timedelta(days=1)
+                # Skip weekends
+                while yesterday.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+                    yesterday = yesterday - datetime.timedelta(days=1)
 
-            if data:
-                df = pd.DataFrame(data)
-                # Calculate all required indicators
-                df = compute_vwap(df)
-                df = atr(df)
-                df = adx(df)
-                df = supertrend(df, SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER)
-                return df
+                prev_day_start = yesterday.replace(hour=14, minute=30, second=0, microsecond=0)
+                prev_day_end = yesterday.replace(hour=15, minute=30, second=0, microsecond=0)
+
+                prev_data = self.executor.get_historical_data(
+                    instrument_token=BANKNIFTY_TOKEN,
+                    from_date=prev_day_start,
+                    to_date=prev_day_end,
+                    interval="minute"
+                )
+
+                # Fetch today's data from market open
+                today_data = self.executor.get_historical_data(
+                    instrument_token=BANKNIFTY_TOKEN,
+                    from_date=market_open_today,
+                    to_date=now,
+                    interval="minute"
+                )
+
+                if prev_data and today_data:
+                    # Combine previous day and today's data for indicator calculation
+                    df_prev = pd.DataFrame(prev_data)
+                    df_today = pd.DataFrame(today_data)
+
+                    # Mark the boundary so we know where today starts
+                    prev_day_candle_count = len(df_prev)
+
+                    # Combine dataframes
+                    df_combined = pd.concat([df_prev, df_today], ignore_index=True)
+
+                    # Calculate ADX on full combined data (needs history)
+                    df_combined = atr(df_combined)
+                    df_combined = adx(df_combined)
+                    df_combined = supertrend(df_combined, SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER)
+
+                    # Now slice to today's data only and calculate VWAP (session-based)
+                    df = df_combined.iloc[prev_day_candle_count:].copy().reset_index(drop=True)
+
+                    # Calculate VWAP on today's data only (it's session-based)
+                    df = compute_vwap(df)
+
+                    return df
+                elif today_data:
+                    # Fallback: only today's data available
+                    df = pd.DataFrame(today_data)
+                    df = compute_vwap(df)
+                    df = atr(df)
+                    df = adx(df)
+                    df = supertrend(df, SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER)
+                    return df
+            else:
+                # Normal case: enough candles from today
+                from_date = now - datetime.timedelta(minutes=120)
+                data = self.executor.get_historical_data(
+                    instrument_token=BANKNIFTY_TOKEN,
+                    from_date=from_date,
+                    to_date=now,
+                    interval="minute"
+                )
+
+                if data:
+                    df = pd.DataFrame(data)
+                    df = compute_vwap(df)
+                    df = atr(df)
+                    df = adx(df)
+                    df = supertrend(df, SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER)
+                    return df
 
         except Exception as e:
             self.logger.error(f"Failed to fetch data: {str(e)}")
