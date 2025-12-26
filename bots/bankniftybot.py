@@ -222,6 +222,97 @@ class BankNiftyBot:
 
         return None
 
+    def get_option_adx(self, symbol):
+        """
+        Calculate ADX for an option contract.
+
+        Fetches option historical data (including previous day if needed)
+        and calculates ADX. This is useful for index options where the
+        underlying index has no trading volume - the option ADX reflects
+        actual traded price action.
+
+        Args:
+            symbol: Option trading symbol (e.g., BANKNIFTY25DEC59100PE)
+
+        Returns:
+            float: Current ADX value, or None if calculation failed
+        """
+        token = self._get_option_token(symbol)
+        if token is None:
+            return None
+
+        now = datetime.datetime.now()
+        market_open_today = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+
+        # Calculate how many minutes since market open
+        if now < market_open_today:
+            minutes_since_open = 0
+        else:
+            minutes_since_open = int((now - market_open_today).total_seconds() / 60)
+
+        # ADX needs ~30 candles minimum
+        MIN_CANDLES_FOR_ADX = 35
+
+        try:
+            if minutes_since_open < MIN_CANDLES_FOR_ADX:
+                # Fetch previous trading day data for ADX calculation
+                yesterday = now - datetime.timedelta(days=1)
+                while yesterday.weekday() >= 5:  # Skip weekends
+                    yesterday = yesterday - datetime.timedelta(days=1)
+
+                prev_day_start = yesterday.replace(hour=14, minute=30, second=0, microsecond=0)
+                prev_day_end = yesterday.replace(hour=15, minute=30, second=0, microsecond=0)
+
+                prev_data = self.executor.get_historical_data(
+                    instrument_token=token,
+                    from_date=prev_day_start,
+                    to_date=prev_day_end,
+                    interval="minute"
+                )
+
+                today_data = self.executor.get_historical_data(
+                    instrument_token=token,
+                    from_date=market_open_today,
+                    to_date=now,
+                    interval="minute"
+                )
+
+                if prev_data and today_data:
+                    df_prev = pd.DataFrame(prev_data)
+                    df_today = pd.DataFrame(today_data)
+                    df_combined = pd.concat([df_prev, df_today], ignore_index=True)
+                    df_combined = adx(df_combined)
+                    option_adx = df_combined['ADX'].iloc[-1]
+                    if pd.notna(option_adx):
+                        return float(option_adx)
+                elif today_data:
+                    df = pd.DataFrame(today_data)
+                    df = adx(df)
+                    option_adx = df['ADX'].iloc[-1]
+                    if pd.notna(option_adx):
+                        return float(option_adx)
+            else:
+                # Normal case: enough candles from today
+                from_date = now - datetime.timedelta(minutes=120)
+                data = self.executor.get_historical_data(
+                    instrument_token=token,
+                    from_date=from_date,
+                    to_date=now,
+                    interval="minute"
+                )
+
+                if data:
+                    df = pd.DataFrame(data)
+                    df = adx(df)
+                    option_adx = df['ADX'].iloc[-1]
+                    if pd.notna(option_adx):
+                        return float(option_adx)
+
+        except Exception as e:
+            self.logger.debug(f"Failed to calculate option ADX for {symbol}: {str(e)}")
+
+        return None
+
     def get_weekly_expiry(self):
         """
         Get the nearest weekly expiry date from actual Kite instruments.
@@ -636,17 +727,13 @@ class BankNiftyBot:
             return None
 
         current_price = df['close'].iloc[-1]
-        current_adx = df['ADX'].iloc[-1]
+        spot_adx = df['ADX'].iloc[-1]
         st_bullish = is_supertrend_bullish(df)
         st_bearish = is_supertrend_bearish(df)
 
         # Calculate ATM strike (BANKNIFTY uses 100 step)
         atm_strike = get_atm_strike(current_price, step=BANKNIFTY_STRIKE_STEP)
         st_status = "Bullish" if st_bullish else "Bearish"
-
-        # Check ADX strength - determine if we can trade or just monitor
-        can_trade = current_adx >= ADX_ENTRY_THRESHOLD
-        mode_status = "" if can_trade else f" [MONITORING - ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
         # Scan option chain for CE if Supertrend is Bullish
         if st_bullish:
@@ -655,7 +742,7 @@ class BankNiftyBot:
             if not ce_strikes:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"CE: No option data available"
                 )
                 return None
@@ -670,17 +757,27 @@ class BankNiftyBot:
             if not atm_data:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"CE: ATM data not available"
                 )
                 return None
+
+            # Calculate option ADX for hybrid approach: max(spot_adx, option_adx)
+            option_adx = self.get_option_adx(atm_data['symbol'])
+            if option_adx is None:
+                option_adx = spot_adx  # Fallback to spot ADX if option ADX unavailable
+            effective_adx = max(spot_adx, option_adx) if pd.notna(spot_adx) else option_adx
+
+            # Check ADX strength - determine if we can trade or just monitor
+            can_trade = effective_adx >= ADX_ENTRY_THRESHOLD
+            mode_status = "" if can_trade else f" [MONITORING - ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
             # Count strikes with positive signals (for visibility)
             positive_signals = [s for s in ce_strikes if s['signal']]
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | SpotADX: {spot_adx:.1f} | OptADX: {option_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"CE Chain Analysis ({len(positive_signals)}/{len(ce_strikes)} strikes above VWAP):"
@@ -702,14 +799,14 @@ class BankNiftyBot:
                         f">>> CE SIGNAL: {atm_data['symbol']} (ATM) | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
                         f"(+{atm_data['vwap_pct']:.1f}%) | "
-                        f"Supertrend Bullish | ADX {current_adx:.1f}"
+                        f"Supertrend Bullish | ADX {effective_adx:.1f} (Spot:{spot_adx:.1f}/Opt:{option_adx:.1f})"
                     )
                     return 'BUY_CE'
                 else:
                     self.logger.info(
                         f">>> CE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
                     )
 
         # Scan option chain for PE if Supertrend is Bearish
@@ -719,7 +816,7 @@ class BankNiftyBot:
             if not pe_strikes:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"PE: No option data available"
                 )
                 return None
@@ -734,17 +831,27 @@ class BankNiftyBot:
             if not atm_data:
                 self.logger.info(
                     f"Spot: {current_price:.2f} | ATM: {atm_strike} | "
-                    f"ADX: {current_adx:.1f} | ST: {st_status} | "
+                    f"SpotADX: {spot_adx:.1f} | ST: {st_status} | "
                     f"PE: ATM data not available"
                 )
                 return None
+
+            # Calculate option ADX for hybrid approach: max(spot_adx, option_adx)
+            option_adx = self.get_option_adx(atm_data['symbol'])
+            if option_adx is None:
+                option_adx = spot_adx  # Fallback to spot ADX if option ADX unavailable
+            effective_adx = max(spot_adx, option_adx) if pd.notna(spot_adx) else option_adx
+
+            # Check ADX strength - determine if we can trade or just monitor
+            can_trade = effective_adx >= ADX_ENTRY_THRESHOLD
+            mode_status = "" if can_trade else f" [MONITORING - ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD}]"
 
             # Count strikes with positive signals (for visibility)
             positive_signals = [s for s in pe_strikes if s['signal']]
 
             # Log chain analysis (informational - shows what's happening across strikes)
             self.logger.info(
-                f"Spot: {current_price:.2f} | ATM: {atm_strike} | ADX: {current_adx:.1f} | ST: {st_status}{mode_status}"
+                f"Spot: {current_price:.2f} | ATM: {atm_strike} | SpotADX: {spot_adx:.1f} | OptADX: {option_adx:.1f} | ST: {st_status}{mode_status}"
             )
             self.logger.info(
                 f"PE Chain Analysis ({len(positive_signals)}/{len(pe_strikes)} strikes above VWAP):"
@@ -766,14 +873,14 @@ class BankNiftyBot:
                         f">>> PE SIGNAL: {atm_data['symbol']} (ATM) | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
                         f"(+{atm_data['vwap_pct']:.1f}%) | "
-                        f"Supertrend Bearish | ADX {current_adx:.1f}"
+                        f"Supertrend Bearish | ADX {effective_adx:.1f} (Spot:{spot_adx:.1f}/Opt:{option_adx:.1f})"
                     )
                     return 'BUY_PE'
                 else:
                     self.logger.info(
                         f">>> PE SIGNAL DETECTED (MONITORING): {atm_data['symbol']} | "
                         f"Premium {atm_data['premium']:.2f} > VWAP {atm_data['vwap']:.2f} "
-                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {current_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
+                        f"(+{atm_data['vwap_pct']:.1f}%) | ADX {effective_adx:.1f} < {ADX_ENTRY_THRESHOLD} - NOT TRADING"
                     )
 
         return None
