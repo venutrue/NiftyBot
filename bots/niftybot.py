@@ -1068,10 +1068,12 @@ class NiftyBot:
             signals.extend(emergency_exits)
 
         # Fetch data for entries and advanced trailing
+        self.logger.info("Fetching NIFTY spot data...")
         df = self.fetch_data()
         if df is None or len(df) < 20:
-            self.logger.debug("Insufficient spot data - entries skipped, exits still monitored")
+            self.logger.warning(f"Insufficient spot data (got {len(df) if df is not None else 0} candles) - entries skipped")
             return signals  # Return any emergency exits we found
+        self.logger.info(f"Got {len(df)} candles, proceeding with analysis...")
 
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
