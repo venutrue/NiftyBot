@@ -1151,8 +1151,10 @@ class NiftyBot:
             # DIRECTION FILTER: Only trade in allowed direction
             # ============================================
             if MARKET_REGIME_ENABLED and ENFORCE_DIRECTION_FILTER and self.current_regime:
+                # Get current ADX for counter-trend override check
+                current_adx = df['ADX'].iloc[-1] if 'ADX' in df.columns and pd.notna(df['ADX'].iloc[-1]) else None
                 should_trade, reason = self.regime_analyzer.should_trade_signal(
-                    self.current_regime, signal_type
+                    self.current_regime, signal_type, adx_value=current_adx
                 )
                 if not should_trade:
                     self.logger.info(
