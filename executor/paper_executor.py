@@ -28,6 +28,7 @@ class PaperTradeExecutor:
         """
         self.logger = setup_logger("PAPER_EXEC")
         self.paper_engine = PaperTradingEngine(initial_capital)
+        self.is_paper = True  # Flag to identify paper trading mode
 
         # Use real Kite connection for market data (prices)
         self.kite_executor = KiteExecutor()

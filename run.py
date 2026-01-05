@@ -301,7 +301,30 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
                 break
             time.sleep(1)
 
-    # End of day summary
+    # End of day summary - aggregate actual data from bots and trade journal
+    # Get P&L from each bot's status
+    for bot in bots:
+        status = bot.get_status()
+        total_pnl += status.get('daily_pnl', 0)
+        total_trades += status.get('trade_count', 0)
+
+    # Get winner/loser counts from trade journal if available
+    try:
+        from executor.trade_journal import get_journal
+        # Use PAPER journal if paper trading, else LIVE
+        journal_mode = 'PAPER' if hasattr(executor, 'is_paper') and executor.is_paper else 'LIVE'
+        journal = get_journal(journal_mode)
+        stats = journal.get_stats()
+
+        # Count today's winners and losers from journal
+        closed_trades = stats.get('total_trades', 0)
+        if closed_trades > 0:
+            win_rate = stats.get('win_rate', 0)
+            total_winners = int(closed_trades * win_rate / 100)
+            total_losers = closed_trades - total_winners
+    except Exception as e:
+        logger.debug(f"Could not get journal stats: {e}")
+
     log_daily_summary(total_trades, total_winners, total_losers, total_pnl)
 
     return {

@@ -570,7 +570,9 @@ class MarketRegimeAnalyzer:
     def should_trade_signal(
         self,
         regime: MarketRegime,
-        signal_type: str
+        signal_type: str,
+        adx_value: float = None,
+        allow_strong_counter_trend: bool = True
     ) -> Tuple[bool, str]:
         """
         Check if a specific signal should be traded based on regime.
@@ -578,6 +580,8 @@ class MarketRegimeAnalyzer:
         Args:
             regime: Current market regime
             signal_type: 'BUY_CE' or 'BUY_PE'
+            adx_value: Current ADX value (optional, for counter-trend override)
+            allow_strong_counter_trend: Allow counter-trend trades with strong ADX (>=40)
 
         Returns:
             (should_trade, reason)
@@ -598,7 +602,11 @@ class MarketRegimeAnalyzer:
         if signal_direction == allowed_direction:
             return True, f"Signal aligned with weekly {regime.weekly_trend.value}"
         else:
-            return False, f"Signal {signal_type} conflicts with weekly {regime.weekly_trend.value} trend"
+            # Check for strong counter-trend override
+            # Allow counter-trend trades when ADX >= 40 (strong intraday trend)
+            if allow_strong_counter_trend and adx_value is not None and adx_value >= 40:
+                return True, f"Counter-trend allowed: ADX {adx_value:.1f} >= 40 (strong intraday momentum)"
+            return False, f"Signal {signal_type} conflicts with weekly {regime.weekly_trend.value} trend (ADX: {adx_value:.1f if adx_value else 'N/A'})"
 
     def format_regime_summary(self, regime: MarketRegime) -> str:
         """Format regime for logging/display."""
