@@ -1872,6 +1872,8 @@ class NiftyBot:
         On expiry day, option buying is extremely risky due to rapid theta decay.
         Options can lose 80-90% of value in minutes as time premium evaporates.
 
+        NIFTY weekly options expire on Thursday (weekday = 3).
+
         Returns:
             bool: True if today is expiry day
         """
@@ -1879,13 +1881,27 @@ class NiftyBot:
             expiry_date = self.get_weekly_expiry()
             if expiry_date:
                 today = datetime.date.today()
-                self._is_expiry = (expiry_date == today)
+                # Check if the nearest expiry matches today
+                if expiry_date == today:
+                    # Validate: NIFTY weekly expiry is on Thursday (weekday = 3)
+                    # If today is not Thursday, this is likely stale data in instruments
+                    if today.weekday() == 3:  # Thursday
+                        self._is_expiry = True
+                        self.logger.warning(
+                            f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
+                            f"Option buying is HIGH RISK due to rapid theta decay!"
+                        )
+                    else:
+                        # Today is not Thursday but instruments show today's expiry
+                        # This is likely stale data, not actual expiry day
+                        self._is_expiry = False
+                        self.logger.debug(
+                            f"Found instruments with today's expiry ({today.strftime('%Y-%m-%d')}) but today is "
+                            f"{today.strftime('%A')}, not Thursday. Treating as non-expiry day."
+                        )
+                else:
+                    self._is_expiry = False
                 self._expiry_day_checked = True
-                if self._is_expiry:
-                    self.logger.warning(
-                        f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
-                        f"Option buying is HIGH RISK due to rapid theta decay!"
-                    )
             else:
                 self._is_expiry = False
                 self._expiry_day_checked = True

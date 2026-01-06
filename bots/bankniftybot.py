@@ -121,6 +121,8 @@ class BankNiftyBot:
         # Reset expiry day flags
         self._expiry_skip_logged = False
         self._expiry_logged = False
+        self._expiry_day_checked = False
+        self._is_expiry = False
 
         self.logger.info("Daily state reset")
 
@@ -1614,16 +1616,41 @@ class BankNiftyBot:
         - High volatility and unpredictable moves
         - Premium sellers have edge, buyers get crushed
 
+        BANKNIFTY weekly options expire on Wednesday (weekday = 2).
+
         Returns:
             True if today is expiry day
         """
-        # Get the actual expiry date from instruments
-        expiry_date = self.get_weekly_expiry()
-        if expiry_date is None:
-            # If we can't determine expiry, check if today is Wednesday (BANKNIFTY expiry)
-            return datetime.date.today().weekday() == 2  # Wednesday = 2
+        if not hasattr(self, '_expiry_day_checked') or not self._expiry_day_checked:
+            expiry_date = self.get_weekly_expiry()
+            today = datetime.date.today()
 
-        return datetime.date.today() == expiry_date
+            if expiry_date is None:
+                # If we can't determine expiry, check if today is Wednesday (BANKNIFTY expiry)
+                self._is_expiry = today.weekday() == 2  # Wednesday = 2
+            elif expiry_date == today:
+                # Validate: BANKNIFTY weekly expiry is on Wednesday (weekday = 2)
+                # If today is not Wednesday, this is likely stale data in instruments
+                if today.weekday() == 2:  # Wednesday
+                    self._is_expiry = True
+                    self.logger.warning(
+                        f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
+                        f"Option buying is HIGH RISK due to rapid theta decay!"
+                    )
+                else:
+                    # Today is not Wednesday but instruments show today's expiry
+                    # This is likely stale data, not actual expiry day
+                    self._is_expiry = False
+                    self.logger.debug(
+                        f"Found instruments with today's expiry ({today.strftime('%Y-%m-%d')}) but today is "
+                        f"{today.strftime('%A')}, not Wednesday. Treating as non-expiry day."
+                    )
+            else:
+                self._is_expiry = False
+
+            self._expiry_day_checked = True
+
+        return getattr(self, '_is_expiry', False)
 
     def _is_past_expiry_cutoff(self, now):
         """
