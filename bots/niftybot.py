@@ -18,6 +18,7 @@ from common.config import (
     TOTAL_CAPITAL, TRADING_CAPITAL,
     MAX_INVESTMENT_PER_TRADE, MIN_INVESTMENT_PER_TRADE,
     MAX_LOSS_PER_DAY, MAX_CONSECUTIVE_LOSSES,
+    LOSS_COOLDOWN_MINUTES, REASSESS_BIAS_AFTER_LOSS,
     INITIAL_SL_PERCENT, BREAKEVEN_TRIGGER_PERCENT, TRAIL_PERCENT,
     TRAIL_FREQUENCY, TRAIL_INCREMENT, MAX_PROFIT_GIVEBACK,
     SUPERTREND_PERIOD, SUPERTREND_MULTIPLIER,
@@ -31,7 +32,7 @@ from common.config import (
     # Hidden Stop Loss (Anti Stop-Hunting)
     HIDDEN_SL_ENABLED, HIDDEN_SL_METHOD, EMERGENCY_SL_PERCENT, SL_CANDLE_INTERVAL,
     # Two-Candle Confirmation & Candle-Low Based SL
-    TWO_CANDLE_EXIT_ENABLED, CANDLE_LOW_SL_ENABLED, SL_BUFFER_PERCENT, TRAIL_ON_NEW_HIGH_ONLY,
+    TWO_CANDLE_EXIT_ENABLED, CANDLE_LOW_SL_ENABLED, SL_BUFFER_PERCENT, TRAIL_ON_NEW_HIGH_ONLY, MAX_SL_PERCENT_FROM_ENTRY,
     # Market Regime Filter (Weekly + Daily -> VWAP Matrix)
     MARKET_REGIME_ENABLED, MIN_TRADE_QUALITY_SCORE, ENFORCE_DIRECTION_FILTER,
     # Trend-Aware Trailing Stop Loss
@@ -108,6 +109,10 @@ class NiftyBot:
         self._nfo_instruments = None
         self._instruments_loaded = False
 
+        # Cooldown tracking (after losses)
+        self.last_loss_time = None  # Time of last loss
+        self.cooldown_until = None  # Don't trade until this time
+
     def reset_daily_state(self):
         """Reset state at start of new trading day."""
         self.trade_count = 0
@@ -135,6 +140,11 @@ class NiftyBot:
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
         self._instruments_loaded = False
+
+        # Reset cooldown
+        self.last_loss_time = None
+        self.cooldown_until = None
+
         self.logger.info("Daily state reset")
 
     def _load_nfo_instruments(self):
@@ -1231,6 +1241,30 @@ class NiftyBot:
         if len(self.active_positions) > 0:
             return False
 
+        # ============================================
+        # COOLDOWN CHECK: Wait after a loss
+        # ============================================
+        if self.cooldown_until is not None:
+            if now < self.cooldown_until:
+                remaining = (self.cooldown_until - now).total_seconds() / 60
+                # Log only periodically (every 5 minutes)
+                if not hasattr(self, '_last_cooldown_log') or \
+                   (now - self._last_cooldown_log).total_seconds() > 300:
+                    self.logger.warning(
+                        f"⏳ COOLDOWN ACTIVE: {remaining:.0f} minutes remaining | "
+                        f"Last loss at {self.last_loss_time.strftime('%H:%M')} | "
+                        f"Resume at {self.cooldown_until.strftime('%H:%M')}"
+                    )
+                    self._last_cooldown_log = now
+                return False
+            else:
+                # Cooldown ended
+                self.logger.info(
+                    f"✓ COOLDOWN ENDED: Ready to trade again | "
+                    f"Cooldown was {LOSS_COOLDOWN_MINUTES} minutes after loss"
+                )
+                self.cooldown_until = None
+
         return True
 
     def _create_entry_signal(self, df, signal_type):
@@ -1264,30 +1298,42 @@ class NiftyBot:
 
         quantity = lots * NIFTY_LOT_SIZE
 
-        # Calculate initial stop loss
+        # Calculate initial stop loss - ALWAYS based on ENTRY PRICE, not candle low
+        # This prevents the 20%+ SL distance bug
         entry_candle_low = premium  # Default to premium if candle data unavailable
 
+        # Calculate SL as percentage of entry price
+        initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
+        max_allowed_sl = premium * (1 - MAX_SL_PERCENT_FROM_ENTRY / 100)
+
         if CANDLE_LOW_SL_ENABLED:
-            # Fetch entry candle to get the low
+            # Fetch entry candle to get the low (for reference/trailing, not initial SL)
             entry_candles = self.get_option_candles(symbol, n_candles=2, interval=SL_CANDLE_INTERVAL)
             if entry_candles and len(entry_candles) >= 1:
-                # Use the most recent closed candle's low
                 entry_candle_low = entry_candles[-1].get('low', premium)
-                # Apply buffer below candle low
-                initial_sl = entry_candle_low * (1 - SL_BUFFER_PERCENT / 100)
-                self.logger.info(
-                    f"{symbol}: Using candle-low based SL | "
-                    f"Candle Low: ₹{entry_candle_low:.2f} | SL: ₹{initial_sl:.2f} (with {SL_BUFFER_PERCENT}% buffer)"
-                )
-            else:
-                # Fallback to percentage-based SL
-                initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
-                self.logger.warning(
-                    f"{symbol}: Could not get entry candle, using percentage SL: ₹{initial_sl:.2f}"
-                )
+                # Calculate what candle-low SL would be
+                candle_based_sl = entry_candle_low * (1 - SL_BUFFER_PERCENT / 100)
+
+                # CAP the SL: Use candle-low only if it's tighter than max allowed
+                if candle_based_sl >= max_allowed_sl:
+                    initial_sl = candle_based_sl
+                    self.logger.info(
+                        f"{symbol}: Using candle-low based SL | "
+                        f"Candle Low: ₹{entry_candle_low:.2f} | SL: ₹{initial_sl:.2f} "
+                        f"({((premium - initial_sl) / premium * 100):.1f}% from entry)"
+                    )
+                else:
+                    # Candle low too far, use entry-price based SL
+                    initial_sl = max_allowed_sl
+                    self.logger.warning(
+                        f"{symbol}: Candle-low SL too wide (₹{candle_based_sl:.2f} = "
+                        f"{((premium - candle_based_sl) / premium * 100):.1f}% loss) | "
+                        f"Using capped SL: ₹{initial_sl:.2f} ({MAX_SL_PERCENT_FROM_ENTRY}% from entry)"
+                    )
         else:
-            # Use traditional percentage-based SL
-            initial_sl = premium * (1 - INITIAL_SL_PERCENT / 100)
+            self.logger.info(
+                f"{symbol}: Using entry-price based SL: ₹{initial_sl:.2f} ({INITIAL_SL_PERCENT}% from entry)"
+            )
 
         # Calculate investment
         investment = premium * quantity
@@ -1817,11 +1863,27 @@ class NiftyBot:
                 # Update daily P&L
                 self.daily_pnl += pnl
 
-                # Track consecutive losses
+                # Track consecutive losses and activate cooldown
                 if pnl < 0:
                     self.consecutive_losses += 1
+                    # Activate cooldown after any loss
+                    self.last_loss_time = datetime.datetime.now()
+                    self.cooldown_until = self.last_loss_time + datetime.timedelta(minutes=LOSS_COOLDOWN_MINUTES)
+                    self.logger.warning(
+                        f"🛑 LOSS RECORDED: ₹{pnl:,.0f} | "
+                        f"Activating {LOSS_COOLDOWN_MINUTES}-minute cooldown until {self.cooldown_until.strftime('%H:%M')}"
+                    )
+
+                    # Re-assess directional bias after loss
+                    if REASSESS_BIAS_AFTER_LOSS and self.regime_analyzer and MARKET_REGIME_ENABLED:
+                        self.logger.info("📊 Re-assessing market bias after loss...")
+                        self._regime_analyzed = False  # Force re-analysis on next scan
                 else:
                     self.consecutive_losses = 0
+                    # Clear cooldown on a winning trade
+                    if self.cooldown_until is not None:
+                        self.logger.info("✓ Winning trade - cooldown cleared")
+                        self.cooldown_until = None
 
                 self.logger.info(
                     f"Position closed: {symbol} | "

@@ -127,11 +127,15 @@ NIFTY_MAX_TRADES_PER_DAY = 50         # Max 50 trades per day (high frequency tr
 MAX_LOSS_PER_DAY = 20000              # Rs. 20K max daily loss - stop trading
 MAX_CONSECUTIVE_LOSSES = 2            # Stop after 2 consecutive losses
 
+# Cooldown after loss (prevents immediate re-entry)
+LOSS_COOLDOWN_MINUTES = 30            # Wait 30 minutes after a loss before new trades
+REASSESS_BIAS_AFTER_LOSS = True       # Re-check directional bias after a loss
+
 # Weekly limits
 MAX_WEEKLY_LOSS = 40000               # Rs. 40K max weekly loss
 
 # Stop loss percentages (on premium)
-INITIAL_SL_PERCENT = 15               # 15% initial stop loss (widened from 10% - options need breathing room)
+INITIAL_SL_PERCENT = 10               # 10% initial stop loss (tightened - better risk management)
 BREAKEVEN_TRIGGER_PERCENT = 5         # Move SL to entry at +5% profit (realistic for intraday)
 TRAIL_PERCENT = 50                    # Trail at 50% of max profit (legacy - used by 'percent' method)
 
@@ -143,7 +147,7 @@ TRAIL_PERCENT = 50                    # Trail at 50% of max profit (legacy - use
 
 HIDDEN_SL_ENABLED = True              # Enable hidden SL with candle close confirmation
 HIDDEN_SL_METHOD = 'technical'        # 'technical' (candle structure) or 'fixed' (percentage)
-EMERGENCY_SL_PERCENT = 20             # Emergency exit if LTP drops 20%+ (no candle close wait)
+EMERGENCY_SL_PERCENT = 12             # Emergency exit if LTP drops 12%+ (reduced from 20% - tighter risk)
 SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5minute recommended)
 
 ##############################################
@@ -155,9 +159,10 @@ SL_CANDLE_INTERVAL = '5minute'        # Candle interval for SL confirmation (5mi
 # 3. Exit: Require 2 consecutive candle closes below SL (not just 1)
 
 TWO_CANDLE_EXIT_ENABLED = True        # Require 2 consecutive candle closes below SL to exit
-CANDLE_LOW_SL_ENABLED = True          # Use entry candle low as initial SL (not percentage)
+CANDLE_LOW_SL_ENABLED = False         # DISABLED: Was using candle low which could be 20%+ away
 SL_BUFFER_PERCENT = 1.0               # Buffer below candle low for SL (1% below candle low)
 TRAIL_ON_NEW_HIGH_ONLY = True         # Only trail SL when price makes a new high
+MAX_SL_PERCENT_FROM_ENTRY = 10        # NEW: Cap SL at max 10% below entry price (prevents wide SL)
 
 ##############################################
 # TREND-AWARE TRAILING STOP LOSS
