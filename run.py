@@ -270,7 +270,8 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
                         order_id = executor.execute(signal)
 
                         if order_id:
-                            total_trades += 1
+                            # Note: trade_count is tracked by bots in on_order_complete
+                            # Don't increment here to avoid double-counting
 
                             # Get actual fill price from order history
                             fill_price = signal.get('entry_price', 0)
