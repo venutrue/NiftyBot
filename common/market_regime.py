@@ -858,7 +858,7 @@ class MarketRegimeAnalyzer:
             if adx_value is None or adx_value < min_adx_for_neutral:
                 return False, (
                     f"Neutral bias requires ADX >= {min_adx_for_neutral} for trade. "
-                    f"Current ADX: {adx_value:.1f if adx_value else 'N/A'}"
+                    f"Current ADX: {f'{adx_value:.1f}' if adx_value else 'N/A'}"
                 )
             return True, (
                 f"Signal allowed in neutral bias with strong ADX {adx_value:.1f} >= {min_adx_for_neutral}"
@@ -884,7 +884,7 @@ class MarketRegimeAnalyzer:
         return False, (
             f"Signal {signal_type} conflicts with {regime.directional_bias.value.upper()} bias "
             f"(confidence: {regime.bias_confidence}%). "
-            f"ADX {adx_value:.1f if adx_value else 'N/A'} < 40 required for counter-bias"
+            f"ADX {f'{adx_value:.1f}' if adx_value else 'N/A'} < 40 required for counter-bias"
         )
 
     def format_regime_summary(self, regime: MarketRegime) -> str:
