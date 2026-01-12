@@ -10,6 +10,7 @@ from typing import Dict, Optional, List
 from dataclasses import dataclass, asdict
 
 from common.logger import setup_logger, log_trade, log_position, log_system
+from executor.performance_tracker import get_tracker
 
 
 @dataclass
@@ -186,6 +187,10 @@ class PaperTradingEngine:
         self.closed_trades.append(trade)
         del self.open_trades[symbol]
 
+        # Track metrics for outlier detection
+        tracker = get_tracker()
+        tracker.record_trade(symbol, pnl, pnl_percent)
+
         log_position(
             "CLOSED",
             symbol,
@@ -297,6 +302,14 @@ class PaperTradingEngine:
                     f"{trade.reason}"
                 )
             print("=" * 70 + "\n")
+
+        # Print performance metrics report with outlier detection
+        try:
+            tracker = get_tracker()
+            tracker.print_daily_report()
+            tracker.end_of_day()
+        except Exception as e:
+            self.logger.debug(f"Could not print metrics report: {e}")
 
     def _save_session(self):
         """Save paper trading session to disk."""
