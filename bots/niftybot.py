@@ -42,7 +42,10 @@ from common.config import (
     WEAK_TREND_BREAKEVEN_PERCENT, WEAK_TREND_TRAIL_FREQUENCY,
     WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
     # Expiry Day Protection
-    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME
+    SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
+    # Market Open Trading (Previous Day VWAP Reference)
+    MARKET_OPEN_TRADING_ENABLED, PREV_DAY_VWAP_THRESHOLD,
+    ENFORCE_PREV_DAY_VWAP_BIAS, MARKET_OPEN_WINDOW_END_MINUTE
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
@@ -100,6 +103,11 @@ class NiftyBot:
         self.previous_close = None
         self.trading_delay_until = None  # Datetime when trading can start
 
+        # Market-open trading (previous day VWAP reference)
+        self.previous_day_vwap = None     # Yesterday's closing VWAP
+        self.market_open_bias = None      # 'BULLISH' or 'BEARISH' based on prev day VWAP
+        self.market_open_trade_taken = False  # Track if we took a market-open trade
+
         # Market regime analyzer (Weekly + Daily -> VWAP Matrix)
         self.regime_analyzer = MarketRegimeAnalyzer(executor) if MARKET_REGIME_ENABLED else None
         self.current_regime = None  # Cached regime for the day
@@ -126,6 +134,11 @@ class NiftyBot:
         self.gap_percentage = 0.0
         self.previous_close = None
         self.trading_delay_until = None
+
+        # Reset market-open trading state
+        self.previous_day_vwap = None
+        self.market_open_bias = None
+        self.market_open_trade_taken = False
 
         # Reset market regime analysis (will be recalculated at market open)
         self.current_regime = None
@@ -525,28 +538,71 @@ class NiftyBot:
         first_candle = df.iloc[0]
         today_open = first_candle['open']
 
-        # Store previous close for future reference
+        # Store previous close and VWAP for future reference
         if self.previous_close is None:
-            # Get previous close from historical data
-            # Use the close from the last candle of previous day
-            # For simplicity, we'll use yesterday's data
+            # Get previous trading day
             yesterday = now - datetime.timedelta(days=1)
+            # Skip weekends
+            while yesterday.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+                yesterday = yesterday - datetime.timedelta(days=1)
+
+            # Fetch full previous day's data for VWAP calculation (9:15 AM - 3:30 PM)
+            prev_day_start = yesterday.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+            prev_day_end = yesterday.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
+
             yesterday_data = self.executor.get_historical_data(
                 instrument_token=NIFTY_50_TOKEN,
-                from_date=yesterday.replace(hour=15, minute=0),
-                to_date=yesterday.replace(hour=15, minute=30),
+                from_date=prev_day_start,
+                to_date=prev_day_end,
                 interval="minute"
             )
 
             if yesterday_data and len(yesterday_data) > 0:
                 self.previous_close = yesterday_data[-1]['close']
+
+                # Calculate previous day's VWAP for market-open trading
+                if MARKET_OPEN_TRADING_ENABLED:
+                    df_yesterday = pd.DataFrame(yesterday_data)
+                    df_yesterday = compute_vwap(df_yesterday)
+                    self.previous_day_vwap = df_yesterday['vwap'].iloc[-1]
+                    self.logger.info(
+                        f"Previous Day VWAP: {self.previous_day_vwap:.2f} | "
+                        f"Previous Close: {self.previous_close:.2f}"
+                    )
             else:
                 # Fallback: use first candle's open as previous close (assumes no gap)
                 self.previous_close = today_open
+                self.previous_day_vwap = None
 
         # Calculate gap percentage
         self.gap_percentage = ((today_open - self.previous_close) / self.previous_close) * 100
         self.gap_detected = True
+
+        # Calculate market-open bias based on previous day VWAP
+        if MARKET_OPEN_TRADING_ENABLED and self.previous_day_vwap is not None:
+            vwap_deviation = ((today_open - self.previous_day_vwap) / self.previous_day_vwap) * 100
+
+            if vwap_deviation >= PREV_DAY_VWAP_THRESHOLD:
+                self.market_open_bias = 'BULLISH'
+                self.logger.info(
+                    f"📈 MARKET OPEN BIAS: BULLISH | Today Open {today_open:.2f} is "
+                    f"+{vwap_deviation:.2f}% above Prev Day VWAP {self.previous_day_vwap:.2f} "
+                    f"(threshold: {PREV_DAY_VWAP_THRESHOLD}%)"
+                )
+            elif vwap_deviation <= -PREV_DAY_VWAP_THRESHOLD:
+                self.market_open_bias = 'BEARISH'
+                self.logger.info(
+                    f"📉 MARKET OPEN BIAS: BEARISH | Today Open {today_open:.2f} is "
+                    f"{vwap_deviation:.2f}% below Prev Day VWAP {self.previous_day_vwap:.2f} "
+                    f"(threshold: {PREV_DAY_VWAP_THRESHOLD}%)"
+                )
+            else:
+                self.market_open_bias = None
+                self.logger.info(
+                    f"⚖️ MARKET OPEN BIAS: NEUTRAL | Today Open {today_open:.2f} is "
+                    f"{vwap_deviation:+.2f}% from Prev Day VWAP {self.previous_day_vwap:.2f} "
+                    f"(below threshold: {PREV_DAY_VWAP_THRESHOLD}%) - No market-open trade"
+                )
 
         # Determine trading delay based on gap size
         if abs(self.gap_percentage) >= LARGE_GAP_THRESHOLD:
@@ -1160,6 +1216,23 @@ class NiftyBot:
 
         if signal_type:
             # ============================================
+            # MARKET-OPEN BIAS FILTER: During 9:15-9:30, only trade in bias direction
+            # ============================================
+            if self._is_market_open_window(now) and ENFORCE_PREV_DAY_VWAP_BIAS:
+                if self.market_open_bias == 'BULLISH' and signal_type != 'BUY_CE':
+                    self.logger.info(
+                        f"MARKET-OPEN FILTER: Blocking {signal_type} | "
+                        f"Bias is BULLISH (price above prev day VWAP) - only CE allowed"
+                    )
+                    return signals
+                elif self.market_open_bias == 'BEARISH' and signal_type != 'BUY_PE':
+                    self.logger.info(
+                        f"MARKET-OPEN FILTER: Blocking {signal_type} | "
+                        f"Bias is BEARISH (price below prev day VWAP) - only PE allowed"
+                    )
+                    return signals
+
+            # ============================================
             # DIRECTION FILTER: Only trade in allowed direction
             # ============================================
             if MARKET_REGIME_ENABLED and ENFORCE_DIRECTION_FILTER and self.current_regime:
@@ -1180,6 +1253,16 @@ class NiftyBot:
                 if self.current_regime:
                     signal['regime_strategy'] = self.current_regime.vwap_strategy.value
                     signal['regime_quality'] = self.current_regime.trade_quality_score
+
+                # Mark market-open trade if in window
+                if self._is_market_open_window(now) and self.market_open_bias is not None:
+                    signal['market_open_trade'] = True
+                    signal['prev_day_vwap'] = self.previous_day_vwap
+                    self.market_open_trade_taken = True
+                    self.logger.info(
+                        f"🌅 MARKET-OPEN TRADE: {signal_type} based on prev day VWAP bias ({self.market_open_bias})"
+                    )
+
                 signals.append(signal)
 
         return signals
@@ -1904,10 +1987,16 @@ class NiftyBot:
                     del self.max_premium_seen[symbol]
 
     def _is_trading_time(self, now):
-        """Check if within trading hours (accounts for gap delays)."""
+        """Check if within trading hours (accounts for gap delays and market-open trading)."""
         market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
         market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0)
         trading_start = now.replace(hour=TRADING_START_HOUR, minute=TRADING_START_MINUTE, second=0)
+
+        # Check if we're in the market-open window (9:15-9:30) with valid bias
+        if self._is_market_open_window(now):
+            # Allow trading if we have a decisive market-open bias
+            if self.market_open_bias is not None and not self.market_open_trade_taken:
+                return True
 
         # Check if gap delay is active
         if self.trading_delay_until is not None:
@@ -1921,6 +2010,20 @@ class NiftyBot:
         else:
             # No gap delay, use normal trading hours
             return trading_start <= now <= market_close
+
+    def _is_market_open_window(self, now):
+        """Check if we're in the market-open trading window (9:15-9:30)."""
+        if not MARKET_OPEN_TRADING_ENABLED:
+            return False
+
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0)
+        market_open_window_end = now.replace(
+            hour=MARKET_OPEN_HOUR,
+            minute=MARKET_OPEN_WINDOW_END_MINUTE,
+            second=0
+        )
+
+        return market_open <= now < market_open_window_end
 
     def _is_force_exit_time(self, now):
         """Check if it's time to force exit all positions."""
