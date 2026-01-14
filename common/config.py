@@ -269,6 +269,26 @@ MEDIUM_GAP_WAIT_MINUTES = 30          # Wait 30 min on medium gap (start at 9:45
 LARGE_GAP_WAIT_MINUTES = 60           # Wait 60 min on large gap (start at 10:15 AM)
 
 ##############################################
+# MARKET OPEN TRADING (Previous Day VWAP Reference)
+##############################################
+# Trade from 9:15 AM if price opens decisively above/below previous day's VWAP
+# This captures overnight news/events that get priced in at market open
+# The previous day VWAP represents where institutions accumulated yesterday
+
+MARKET_OPEN_TRADING_ENABLED = True    # Enable trading from 9:15 using prev day VWAP
+PREV_DAY_VWAP_THRESHOLD = 0.3         # Price must be 0.3% above/below prev day VWAP to trade at open
+                                      # This ensures a "decisive" move, not noise
+
+# Directional bias from previous day VWAP
+# If price > prev_day_vwap: Bullish bias (prefer CE)
+# If price < prev_day_vwap: Bearish bias (prefer PE)
+ENFORCE_PREV_DAY_VWAP_BIAS = True     # Only trade in direction of VWAP bias at market open
+
+# Time window for market-open trading (before normal 9:30 start)
+MARKET_OPEN_WINDOW_END_MINUTE = 30    # Market open window ends at 9:30 (15 min window)
+                                      # After 9:30, normal VWAP + Supertrend + ADX rules apply
+
+##############################################
 # EXIT PARAMETERS
 ##############################################
 
