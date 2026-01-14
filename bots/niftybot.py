@@ -43,9 +43,9 @@ from common.config import (
     WEAK_TREND_TRAIL_INCREMENT, WEAK_TREND_MAX_GIVEBACK,
     # Expiry Day Protection
     SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
-    # Market Open Trading (Previous Day VWAP Reference)
-    MARKET_OPEN_TRADING_ENABLED, PREV_DAY_VWAP_THRESHOLD,
-    ENFORCE_PREV_DAY_VWAP_BIAS, MARKET_OPEN_WINDOW_END_MINUTE
+    # Profit Target & Return Normalization
+    PROFIT_TARGET_ENABLED, PROFIT_TARGET_PERCENT,
+    PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_QTY_PERCENT
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
@@ -1498,6 +1498,18 @@ class NiftyBot:
             # Determine exit reason
             exit_reason = None
             new_sl = current_sl
+
+            # ============================================
+            # PROFIT TARGET EXIT (Return Normalization)
+            # ============================================
+            # Exit at profit target to prevent chasing outlier returns
+            # A 50% profit is excellent; don't wait for 100%+ which is rare
+            if PROFIT_TARGET_ENABLED and profit_pct >= PROFIT_TARGET_PERCENT:
+                exit_reason = f"🎯 PROFIT TARGET HIT: +{profit_pct:.1f}% >= {PROFIT_TARGET_PERCENT}% target"
+                self.logger.info(
+                    f"{symbol}: Profit target reached! "
+                    f"Entry: ₹{entry_premium:.2f} → Current: ₹{current_premium:.2f} (+{profit_pct:.1f}%)"
+                )
 
             # Fetch option candles once (used for hidden SL confirmation and trailing)
             option_candles = None

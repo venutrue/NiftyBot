@@ -134,6 +134,26 @@ REASSESS_BIAS_AFTER_LOSS = True       # Re-check directional bias after a loss
 # Weekly limits
 MAX_WEEKLY_LOSS = 40000               # Rs. 40K max weekly loss
 
+##############################################
+# PROFIT TARGET & RETURN NORMALIZATION
+##############################################
+# Prevents outsized wins from distorting expectations
+# A single 100%+ trade is an anomaly, not a realistic target
+
+PROFIT_TARGET_ENABLED = True          # Enable profit target exits
+PROFIT_TARGET_PERCENT = 50            # Exit at 50% profit (prevents chasing 100%+ outliers)
+PARTIAL_PROFIT_ENABLED = True         # Take partial profits at milestones
+PARTIAL_PROFIT_PERCENT = 30           # Take 50% position off at 30% profit
+PARTIAL_PROFIT_QTY_PERCENT = 50       # Exit 50% of quantity at partial target
+
+# Daily profit targets (optional - stop trading when hit)
+DAILY_PROFIT_TARGET_ENABLED = False   # Enable daily profit target
+DAILY_PROFIT_TARGET = 10000           # Rs. 10K daily target (5% of 2L capital)
+
+# Outlier detection thresholds (for metrics tracking)
+OUTLIER_WIN_THRESHOLD = 50            # Trades with >50% return are outliers
+OUTLIER_LOSS_THRESHOLD = -15          # Trades with <-15% return are outliers
+
 # Stop loss percentages (on premium)
 INITIAL_SL_PERCENT = 10               # 10% initial stop loss (tightened - better risk management)
 BREAKEVEN_TRIGGER_PERCENT = 5         # Move SL to entry at +5% profit (realistic for intraday)
