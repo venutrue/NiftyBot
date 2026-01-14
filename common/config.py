@@ -116,7 +116,7 @@ NIFTY_LOT_SIZE = 25
 # BANKNIFTY lot size (changed to 15 recently)
 BANKNIFTY_LOT_SIZE = 15
 BANKNIFTY_STRIKE_STEP = 100           # Strike interval for BANKNIFTY
-BANKNIFTY_MAX_TRADES_PER_DAY = 2      # Max trades for BANKNIFTY bot
+BANKNIFTY_MAX_TRADES_PER_DAY = 10     # Max trades for BANKNIFTY bot (capital erosion is primary limit)
 
 ##############################################
 # RISK MANAGEMENT
@@ -124,8 +124,8 @@ BANKNIFTY_MAX_TRADES_PER_DAY = 2      # Max trades for BANKNIFTY bot
 
 # Daily limits
 NIFTY_MAX_TRADES_PER_DAY = 50         # Max 50 trades per day (high frequency trading)
-MAX_LOSS_PER_DAY = 20000              # Rs. 20K max daily loss - stop trading
-MAX_CONSECUTIVE_LOSSES = 2            # Stop after 2 consecutive losses
+MAX_LOSS_PER_DAY = 10000              # Rs. 10K max daily loss (5% of capital) - stop trading
+MAX_CONSECUTIVE_LOSSES = 3            # Stop after 3 consecutive losses (capital erosion is primary limit)
 
 # Cooldown after loss (prevents immediate re-entry)
 LOSS_COOLDOWN_MINUTES = 30            # Wait 30 minutes after a loss before new trades

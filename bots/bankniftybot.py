@@ -1031,14 +1031,14 @@ class BankNiftyBot:
         if self._is_force_exit_time(now):
             return self._force_exit_all("End of day exit")
 
-        # Check daily loss limit
+        # Check daily loss limit (5% capital erosion cap)
         if self.daily_pnl <= -MAX_LOSS_PER_DAY:
-            self.logger.warning(f"Daily loss limit reached: Rs. {self.daily_pnl}")
+            self.logger.warning(f"CAPITAL EROSION LIMIT: Daily loss Rs. {abs(self.daily_pnl):,.0f} >= Rs. {MAX_LOSS_PER_DAY:,.0f} (5% of capital) - STOPPING")
             return self._force_exit_all("Daily loss limit reached")
 
-        # Check consecutive losses
+        # Check consecutive losses (prevents tilt/revenge trading)
         if self.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-            self.logger.warning(f"Max consecutive losses ({MAX_CONSECUTIVE_LOSSES}) reached")
+            self.logger.warning(f"CONSECUTIVE LOSSES: {self.consecutive_losses}/{MAX_CONSECUTIVE_LOSSES} - pausing new entries (Daily P&L: Rs. {self.daily_pnl:,.0f})")
             return signals  # Don't take new trades, but keep existing positions
 
         # ============================================
@@ -1110,15 +1110,15 @@ class BankNiftyBot:
 
     def _can_enter_new_trade(self, now):
         """Check if we can enter a new trade."""
-        # Max trades check
+        # Max trades check (soft limit - capital erosion is primary)
         if self.trade_count >= BANKNIFTY_MAX_TRADES_PER_DAY:
-            self.logger.debug("Max trades reached")
+            self.logger.info(f"MAX TRADES: {self.trade_count}/{BANKNIFTY_MAX_TRADES_PER_DAY} trades done today - no new entries")
             return False
 
         # No new entries after cutoff time
         cutoff = now.replace(hour=LAST_ENTRY_HOUR, minute=LAST_ENTRY_MINUTE, second=0)
         if now >= cutoff:
-            self.logger.debug("Past entry cutoff time")
+            self.logger.info(f"CUTOFF TIME: Past {LAST_ENTRY_HOUR}:{LAST_ENTRY_MINUTE:02d} - no new entries")
             return False
 
         # Already have a position
