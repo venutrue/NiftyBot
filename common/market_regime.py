@@ -851,10 +851,12 @@ class MarketRegimeAnalyzer:
         signal_direction = 'CE' if signal_type == 'BUY_CE' else 'PE'
 
         # ============================================
-        # BOTH_STRICT: Neutral bias, require ADX > 30
+        # BOTH_STRICT: Neutral bias, require ADX > 25
+        # Rationale: 30 was too conservative, blocked valid signals.
+        # 25 matches STRONG_TREND_ADX and still filters weak moves.
         # ============================================
         if allowed_direction == 'BOTH_STRICT':
-            min_adx_for_neutral = 30
+            min_adx_for_neutral = 25  # Lowered from 30 based on paper trading analysis
             if adx_value is None or adx_value < min_adx_for_neutral:
                 return False, (
                     f"Neutral bias requires ADX >= {min_adx_for_neutral} for trade. "
