@@ -43,7 +43,9 @@ from common.config import (
     TWO_CANDLE_EXIT_ENABLED, CANDLE_LOW_SL_ENABLED, SL_BUFFER_PERCENT, TRAIL_ON_NEW_HIGH_ONLY,
     # Profit Target & Return Normalization
     PROFIT_TARGET_ENABLED, PROFIT_TARGET_PERCENT,
-    PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_QTY_PERCENT
+    PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_QTY_PERCENT,
+    # Market Open Trading
+    MARKET_OPEN_TRADING_ENABLED
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (

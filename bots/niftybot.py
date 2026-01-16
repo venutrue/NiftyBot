@@ -45,7 +45,9 @@ from common.config import (
     SKIP_OPTION_BUYING_ON_EXPIRY, EXPIRY_DAY_CUTOFF_TIME,
     # Profit Target & Return Normalization
     PROFIT_TARGET_ENABLED, PROFIT_TARGET_PERCENT,
-    PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_QTY_PERCENT
+    PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_QTY_PERCENT,
+    # Market Open Trading
+    MARKET_OPEN_TRADING_ENABLED
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.technical_sl import calculate_entry_stop_loss
