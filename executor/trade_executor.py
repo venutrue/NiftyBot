@@ -147,7 +147,9 @@ class KiteExecutor(BrokerInterface):
             )
 
         # Warn if unusually high usage (might indicate bug)
-        if self.api_call_count > 2000:
+        # Threshold raised from 2000 to 3000: 2 bots + option ADX calculations
+        # legitimately use ~2,400 calls/day during active trading
+        if self.api_call_count > 3000:
             self.logger.warning(
                 f"⚠️  High API usage: {self.api_call_count} calls today. "
                 f"This is unusual - check for bugs or runaway loops."
