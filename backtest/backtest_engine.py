@@ -219,6 +219,9 @@ class BacktestEngine:
         """
         Get the nearest weekly expiry date from actual Kite instruments.
 
+        This method validates that expiry dates fall on the expected weekday
+        (Thursday for NIFTY weekly, or Wednesday for holiday adjustments).
+
         Args:
             reference_date: Date to find expiry for (datetime.date or datetime.datetime)
 
@@ -246,11 +249,33 @@ class BacktestEngine:
             self.logger.error(f"No NIFTY expiries found >= {reference_date}")
             return None
 
-        # Get the nearest expiry (min of all future expiries)
-        nearest_expiry = min(nifty_expiries)
+        # NIFTY weekly expiry is on Thursday (weekday = 3)
+        # If holiday on Thursday, expiry moves to Wednesday (weekday = 2)
+        # Valid expiry days: Thursday (3) or Wednesday (2, holiday adjustment)
+        valid_expiry_days = {2, 3}  # Wednesday, Thursday
 
-        self.logger.debug(f"Using NIFTY expiry: {nearest_expiry} for date {reference_date}")
-        return nearest_expiry
+        # Filter to only valid expiry days
+        valid_expiries = [exp for exp in nifty_expiries if exp.weekday() in valid_expiry_days]
+
+        if valid_expiries:
+            nearest_expiry = min(valid_expiries)
+            self.logger.debug(f"Using NIFTY expiry: {nearest_expiry} ({nearest_expiry.strftime('%A')}) for date {reference_date}")
+            return nearest_expiry
+
+        # No valid expiries found - fall back to calculating expected expiry
+        self.logger.warning(
+            f"No valid NIFTY expiry dates found (expected Thursday/Wednesday). "
+            f"Available expiries: {sorted(nifty_expiries)[:5]}. Calculating fallback."
+        )
+
+        # Calculate next Thursday from reference date
+        days_until_thursday = (3 - reference_date.weekday()) % 7
+        if days_until_thursday == 0:
+            days_until_thursday = 7  # Use next week if reference is Thursday
+        expected_expiry = reference_date + datetime.timedelta(days=days_until_thursday)
+
+        self.logger.info(f"Using calculated NIFTY expiry: {expected_expiry} ({expected_expiry.strftime('%A')})")
+        return expected_expiry
 
     def _get_option_symbol(self, strike, option_type, reference_date):
         """

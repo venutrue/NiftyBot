@@ -338,7 +338,8 @@ class BankNiftyBot:
         Get the nearest weekly expiry date from actual Kite instruments.
 
         This method queries real expiry dates from Kite instead of calculating
-        them mathematically. This handles holidays and special cases automatically.
+        them mathematically. It validates that expiry dates fall on the expected
+        weekday (Wednesday for BANKNIFTY weekly, or adjusted for holidays).
 
         Returns:
             datetime.date object for nearest expiry, or None if not found
@@ -362,11 +363,38 @@ class BankNiftyBot:
             self.logger.error(f"No BANKNIFTY expiries found >= {today}")
             return None
 
-        # Get the nearest expiry (min of all future expiries)
-        nearest_expiry = min(banknifty_expiries)
+        # BANKNIFTY weekly expiry is on Wednesday (weekday = 2)
+        # Monthly expiry is last Wednesday of month
+        # If holiday on Wednesday, expiry moves to Tuesday (weekday = 1)
+        # Valid expiry days: Wednesday (2) or Tuesday (1, holiday adjustment)
+        valid_expiry_days = {1, 2}  # Tuesday, Wednesday
 
-        self.logger.debug(f"Using BANKNIFTY expiry: {nearest_expiry}")
-        return nearest_expiry
+        # Filter to only valid expiry days
+        valid_expiries = [exp for exp in banknifty_expiries if exp.weekday() in valid_expiry_days]
+
+        if valid_expiries:
+            nearest_expiry = min(valid_expiries)
+            self.logger.debug(f"Using BANKNIFTY expiry: {nearest_expiry} ({nearest_expiry.strftime('%A')})")
+            return nearest_expiry
+
+        # No valid expiries found - this indicates stale/incorrect instruments data
+        # Fall back to calculating the expected expiry
+        self.logger.warning(
+            f"No valid BANKNIFTY expiry dates found (expected Wednesday/Tuesday). "
+            f"Available expiries: {sorted(banknifty_expiries)[:5]}. Calculating fallback."
+        )
+
+        # Calculate next Wednesday (BANKNIFTY weekly expiry)
+        days_until_wednesday = (2 - today.weekday()) % 7
+        if days_until_wednesday == 0:
+            # Today is Wednesday
+            if datetime.datetime.now().hour >= 15:
+                # After market close, use next week's expiry
+                days_until_wednesday = 7
+        expected_expiry = today + datetime.timedelta(days=days_until_wednesday)
+
+        self.logger.info(f"Using calculated BANKNIFTY expiry: {expected_expiry} ({expected_expiry.strftime('%A')})")
+        return expected_expiry
 
     def get_option_symbol(self, strike, option_type):
         """
