@@ -23,15 +23,19 @@ from common.logger import setup_logger
 class TradeJournal:
     """
     Track all trades in Excel format for easy review.
-    
-    Creates Excel file: trades/trade_journal_YYYY-MM.xlsx
-    Separate sheets: Live Trades, Paper Trades, Daily Summary
+
+    Creates single continuous Excel file per mode:
+    - trades/trade_journal_paper.xlsx (for paper trading)
+    - trades/trade_journal_live.xlsx (for live trading)
+
+    All trades are accumulated in one file - no monthly reset.
+    Sheets: {MODE}_Trades, Daily_Summary
     """
     
     def __init__(self, mode='LIVE'):
         """
         Initialize trade journal.
-        
+
         Args:
             mode: 'LIVE' or 'PAPER'
         """
@@ -43,18 +47,18 @@ class TradeJournal:
         project_root = Path(__file__).parent.parent
         self.trades_dir = project_root / 'trades'
         self.trades_dir.mkdir(exist_ok=True, parents=True)
-        
-        # Generate filename with current month
-        current_month = datetime.datetime.now().strftime('%Y-%m')
-        self.excel_file = self.trades_dir / f'trade_journal_{current_month}.xlsx'
-        
+
+        # Single continuous file per mode (no monthly reset)
+        # This keeps all historical trades in one file for easy analysis
+        self.excel_file = self.trades_dir / f'trade_journal_{mode.lower()}.xlsx'
+
         # Initialize data structures
         self.trades = []
         self.daily_summary = []
-        
+
         # Load existing data if file exists
         self._load_existing_journal()
-        
+
         self.logger.info(f"Trade journal initialized: {self.excel_file}")
     
     def _load_existing_journal(self):
