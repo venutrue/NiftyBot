@@ -1522,6 +1522,13 @@ class NiftyBot:
             self.max_premium_seen[symbol] = max(self.max_premium_seen[symbol], current_premium)
             max_premium = self.max_premium_seen[symbol]
 
+            # Track last LTP for price movement logging
+            last_ltp = position.get('last_ltp', entry_premium)
+            last_ltp_time = position.get('last_ltp_time')
+            now = datetime.datetime.now()
+            position['last_ltp'] = current_premium
+            position['last_ltp_time'] = now
+
             # Calculate profit/loss percentage
             profit_pct = ((current_premium - entry_premium) / entry_premium) * 100
             loss_pct = -profit_pct if profit_pct < 0 else 0
@@ -1608,6 +1615,24 @@ class NiftyBot:
                 if loss_pct >= EMERGENCY_SL_PERCENT:
                     exit_reason = f"EMERGENCY SL hit (Loss: {loss_pct:.1f}% >= {EMERGENCY_SL_PERCENT}%)"
                     self.logger.warning(f"{symbol}: {exit_reason}")
+
+                    # Enhanced logging for emergency SL diagnosis
+                    expected_sl_price = entry_premium * (1 - EMERGENCY_SL_PERCENT / 100)
+                    slippage_pct = loss_pct - EMERGENCY_SL_PERCENT
+                    slippage_amount = entry_premium * slippage_pct / 100
+                    price_change_since_last = ((current_premium - last_ltp) / last_ltp * 100) if last_ltp > 0 else 0
+                    time_since_last_check = (now - last_ltp_time).total_seconds() if last_ltp_time else 0
+                    entry_time = position.get('entry_time')
+                    time_in_position = (now - entry_time).total_seconds() / 60 if entry_time else 0
+
+                    self.logger.warning(
+                        f"⚠️ EMERGENCY SL SLIPPAGE ANALYSIS | {symbol}:\n"
+                        f"    Entry: ₹{entry_premium:.2f} | Current: ₹{current_premium:.2f}\n"
+                        f"    Expected SL price (12%): ₹{expected_sl_price:.2f} | Actual exit: ₹{current_premium:.2f}\n"
+                        f"    Slippage: {slippage_pct:.1f}% beyond {EMERGENCY_SL_PERCENT}% SL (₹{slippage_amount:.2f} extra loss)\n"
+                        f"    Price change since last check: {price_change_since_last:.1f}% | Time: {time_since_last_check:.0f}s\n"
+                        f"    Last LTP: ₹{last_ltp:.2f} | Time in position: {time_in_position:.1f} min"
+                    )
 
                 # HIDDEN SL: Check candle CLOSE, not LTP
                 elif profit_pct < 0:  # Only check SL when in loss
