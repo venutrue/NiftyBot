@@ -1005,8 +1005,59 @@ class BankNiftyBot:
             self.logger.error(f"Failed to get option candles for {symbol}: {str(e)}")
             return None
 
-    def scan(self):
-        """Main scanning function. Called by run.py."""
+    def monitor_positions(self):
+        """
+        Lightweight position monitoring for SL checks.
+
+        This method is called frequently (every 5 seconds by default) to
+        monitor open positions for emergency SL and trailing SL exits.
+        It only does LTP checks - no heavy analysis or entry signals.
+
+        Returns:
+            list: Exit signals for any positions that hit SL
+        """
+        signals = []
+
+        # Skip if no positions to monitor
+        if len(self.active_positions) == 0:
+            return signals
+
+        now = datetime.datetime.now()
+
+        # Check if within trading hours
+        if not self._is_trading_time(now):
+            return signals
+
+        # Force exit check (3:15 PM)
+        if self._is_force_exit_time(now):
+            return self._force_exit_all("End of day exit")
+
+        # Check daily loss limit (5% capital erosion cap)
+        if self.daily_pnl <= -MAX_LOSS_PER_DAY:
+            self.logger.warning(f"CAPITAL EROSION LIMIT: Daily loss Rs. {abs(self.daily_pnl):,.0f} >= Rs. {MAX_LOSS_PER_DAY:,.0f} (5% of capital) - STOPPING")
+            return self._force_exit_all("Daily loss limit reached")
+
+        # Emergency/basic SL check (LTP-based, no dataframe needed)
+        # This is the fast path - just gets LTP and checks emergency SL
+        emergency_exits = self._check_exits(df=None)
+        signals.extend(emergency_exits)
+
+        return signals
+
+    def scan(self, skip_position_check=False):
+        """
+        Main scanning function for entry analysis.
+
+        Called by run.py every 60 seconds (default) for heavier analysis
+        including option chain scanning, regime analysis, and entry signals.
+
+        Args:
+            skip_position_check: If True, skip position monitoring (already done
+                                by monitor_positions() in the fast loop)
+
+        Returns:
+            list: Entry and exit signals
+        """
         signals = []
         now = datetime.datetime.now()
 
@@ -1050,7 +1101,11 @@ class BankNiftyBot:
         # This ensures active positions are ALWAYS monitored, even if
         # spot data fetch fails. We check exits with df=None first for
         # emergency/basic SL, then again with df for advanced trailing.
-        if len(self.active_positions) > 0:
+        #
+        # NOTE: If skip_position_check=True, the fast position monitor loop
+        # has already done emergency SL checks every 5 seconds, so we skip
+        # the redundant check here.
+        if len(self.active_positions) > 0 and not skip_position_check:
             # First pass: Emergency exits (no df needed - pure LTP based)
             emergency_exits = self._check_exits(df=None)
             signals.extend(emergency_exits)

@@ -77,6 +77,11 @@ Examples:
   python run.py --paper --bot gold # Paper trade Gold futures
   python run.py --dry-run          # Signals only, no trades
   python run.py --status           # Show system status
+
+Interval Options:
+  --interval 60              # Full scan every 60s (default)
+  --position-interval 5      # Position SL check every 5s (default)
+  --position-interval 10     # Slower position monitoring (10s)
         """
     )
 
@@ -109,7 +114,14 @@ Examples:
         '--interval',
         type=int,
         default=60,
-        help='Scan interval in seconds (default: 60 for 1-minute monitoring)'
+        help='Full scan interval in seconds for entry analysis (default: 60)'
+    )
+
+    parser.add_argument(
+        '--position-interval',
+        type=int,
+        default=5,
+        help='Position monitoring interval in seconds for SL checks (default: 5)'
     )
 
     return parser.parse_args()
@@ -231,15 +243,31 @@ def show_status(executor, bots):
 
     print("\n" + "=" * 50)
 
-def run_trading_loop(executor, bots, dry_run=False, interval=60):
-    """Main trading loop."""
+def run_trading_loop(executor, bots, dry_run=False, interval=60, position_interval=5):
+    """
+    Main trading loop with dual-interval scanning.
+
+    - Position monitoring runs every `position_interval` seconds (default: 5s)
+      This checks SL/exits for open positions with minimal API calls.
+
+    - Full entry analysis runs every `interval` seconds (default: 60s)
+      This does heavier analysis: option chains, regime, new entry signals.
+
+    Args:
+        executor: Trade executor instance
+        bots: List of bot instances
+        dry_run: If True, don't execute trades
+        interval: Full scan interval in seconds (default: 60)
+        position_interval: Position monitoring interval in seconds (default: 5)
+    """
     global running
 
     logger.info("=" * 50)
     logger.info("TRADING SYSTEM STARTED")
     logger.info(f"Active Bots: {', '.join([b.name for b in bots])}")
     logger.info(f"Dry Run: {dry_run}")
-    logger.info(f"Scan Interval: {interval} seconds")
+    logger.info(f"Entry Scan Interval: {interval} seconds")
+    logger.info(f"Position Monitor Interval: {position_interval} seconds")
     logger.info("=" * 50)
 
     log_user_action("START", f"Bots: {', '.join([b.name for b in bots])}, Dry Run: {dry_run}")
@@ -250,17 +278,45 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
     total_losers = 0
     total_pnl = 0
 
+    # Dual-interval timing
+    last_full_scan = 0  # Force immediate full scan on start
+    position_check_count = 0
+
     while running:
         # Check market hours
         if not is_market_open(bots):
             logger.info("Market closed. Stopping bots.")
             break
 
-        try:
-            # Scan each bot for signals
-            for bot in bots:
-                signals = bot.scan()
+        current_time = time.time()
+        time_since_full_scan = current_time - last_full_scan
+        do_full_scan = time_since_full_scan >= interval
 
+        try:
+            for bot in bots:
+                signals = []
+
+                # ============================================
+                # POSITION MONITORING (every position_interval)
+                # ============================================
+                # Always monitor positions for SL/exit checks
+                # This is a lightweight operation (just LTP checks)
+                if hasattr(bot, 'monitor_positions'):
+                    exit_signals = bot.monitor_positions()
+                    if exit_signals:
+                        signals.extend(exit_signals)
+                        position_check_count += 1
+
+                # ============================================
+                # FULL ENTRY ANALYSIS (every interval)
+                # ============================================
+                # Heavier analysis for new entry signals
+                if do_full_scan:
+                    entry_signals = bot.scan(skip_position_check=True)
+                    if entry_signals:
+                        signals.extend(entry_signals)
+
+                # Process all signals (exits and entries)
                 for signal in signals:
                     logger.info(f"Signal from {signal['source']}: {signal['action']} {signal['symbol']}")
 
@@ -270,9 +326,6 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
                         order_id = executor.execute(signal)
 
                         if order_id:
-                            # Note: trade_count is tracked by bots in on_order_complete
-                            # Don't increment here to avoid double-counting
-
                             # Get actual fill price from order history
                             fill_price = signal.get('entry_price', 0)
                             order_status = executor.get_order_history(order_id)
@@ -291,12 +344,16 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60):
                                 stop_loss=signal.get('stop_loss')
                             )
 
+            # Update last full scan time
+            if do_full_scan:
+                last_full_scan = current_time
+
         except Exception as e:
             logger.error(f"Error in trading loop: {str(e)}")
 
-        # Interruptible sleep - check 'running' flag every second
-        # This allows instant Ctrl+C response instead of waiting for full interval
-        for _ in range(interval):
+        # Interruptible sleep for position_interval seconds
+        # This allows instant Ctrl+C response
+        for _ in range(position_interval):
             if not running:
                 logger.info("Shutdown requested during sleep interval")
                 break
@@ -400,7 +457,8 @@ def main():
             executor=executor,
             bots=bots,
             dry_run=args.dry_run,
-            interval=args.interval
+            interval=args.interval,
+            position_interval=args.position_interval
         )
 
         logger.info("Trading session complete")
