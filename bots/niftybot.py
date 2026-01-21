@@ -359,7 +359,8 @@ class NiftyBot:
         Get the nearest weekly expiry date from actual Kite instruments.
 
         This method queries real expiry dates from Kite instead of calculating
-        them mathematically. This handles holidays and special cases automatically.
+        them mathematically. It validates that expiry dates fall on the expected
+        weekday (Thursday for NIFTY weekly, or adjusted for holidays).
 
         Returns:
             datetime.date object for nearest expiry, or None if not found
@@ -383,11 +384,38 @@ class NiftyBot:
             self.logger.error(f"No NIFTY expiries found >= {today}")
             return None
 
-        # Get the nearest expiry (min of all future expiries)
-        nearest_expiry = min(nifty_expiries)
+        # NIFTY weekly expiry is on Thursday (weekday = 3)
+        # Monthly expiry is last Thursday of month
+        # If holiday on Thursday, expiry moves to Wednesday (weekday = 2)
+        # Valid expiry days: Thursday (3) or Wednesday (2, holiday adjustment)
+        valid_expiry_days = {2, 3}  # Wednesday, Thursday
 
-        self.logger.debug(f"Using NIFTY expiry: {nearest_expiry}")
-        return nearest_expiry
+        # Filter to only valid expiry days
+        valid_expiries = [exp for exp in nifty_expiries if exp.weekday() in valid_expiry_days]
+
+        if valid_expiries:
+            nearest_expiry = min(valid_expiries)
+            self.logger.debug(f"Using NIFTY expiry: {nearest_expiry} ({nearest_expiry.strftime('%A')})")
+            return nearest_expiry
+
+        # No valid expiries found - this indicates stale/incorrect instruments data
+        # Fall back to calculating the expected expiry
+        self.logger.warning(
+            f"No valid NIFTY expiry dates found (expected Thursday/Wednesday). "
+            f"Available expiries: {sorted(nifty_expiries)[:5]}. Calculating fallback."
+        )
+
+        # Calculate next Thursday (NIFTY weekly expiry)
+        days_until_thursday = (3 - today.weekday()) % 7
+        if days_until_thursday == 0:
+            # Today is Thursday
+            if datetime.datetime.now().hour >= 15:
+                # After market close, use next week's expiry
+                days_until_thursday = 7
+        expected_expiry = today + datetime.timedelta(days=days_until_thursday)
+
+        self.logger.info(f"Using calculated NIFTY expiry: {expected_expiry} ({expected_expiry.strftime('%A')})")
+        return expected_expiry
 
     def get_option_symbol(self, strike, option_type):
         """
