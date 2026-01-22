@@ -46,7 +46,9 @@ from common.config import (
     PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PERCENT, PARTIAL_PROFIT_QTY_PERCENT,
     # Market Open Trading
     MARKET_OPEN_TRADING_ENABLED, MARKET_OPEN_WINDOW_END_MINUTE,
-    PREV_DAY_VWAP_THRESHOLD, ENFORCE_PREV_DAY_VWAP_BIAS
+    PREV_DAY_VWAP_THRESHOLD, ENFORCE_PREV_DAY_VWAP_BIAS,
+    # Market Regime Filter (Weekly + Daily -> Direction Filter)
+    MARKET_REGIME_ENABLED, MIN_TRADE_QUALITY_SCORE, ENFORCE_DIRECTION_FILTER
 )
 from common.logger import setup_logger, log_signal, log_system
 from common.indicators import (
@@ -54,6 +56,7 @@ from common.indicators import (
     supertrend, is_supertrend_bullish, is_supertrend_bearish,
     get_atm_strike
 )
+from common.market_regime import MarketRegimeAnalyzer, VWAPStrategy
 from executor.trade_journal import get_journal
 
 ##############################################
@@ -107,6 +110,11 @@ class BankNiftyBot:
         self.market_open_bias = None      # 'BULLISH' or 'BEARISH' based on prev day VWAP
         self.market_open_trade_taken = False  # Track if we took a market-open trade
 
+        # Market regime analyzer (Weekly trend -> Direction Filter)
+        self.regime_analyzer = MarketRegimeAnalyzer(executor) if MARKET_REGIME_ENABLED else None
+        self.current_regime = None  # Cached regime for the day
+        self._regime_analyzed = False  # Flag to run analysis once per day
+
         # Instrument cache (avoid repeated API calls)
         self._nfo_instruments = None
         self._instruments_loaded = False
@@ -129,6 +137,10 @@ class BankNiftyBot:
         self.previous_day_vwap = None
         self.market_open_bias = None
         self.market_open_trade_taken = False
+
+        # Reset market regime analysis (will be recalculated at market open)
+        self.current_regime = None
+        self._regime_analyzed = False
 
         # Refresh instruments daily (expiry changes)
         self._nfo_instruments = None
@@ -1146,6 +1158,10 @@ class BankNiftyBot:
             return signals  # Return any emergency exits we found
         self.logger.info(f"Got {len(df)} candles, proceeding with analysis...")
 
+        # Run market regime analysis (pre-market checklist) - once per day
+        if MARKET_REGIME_ENABLED and not self._regime_analyzed:
+            self._analyze_market_regime()
+
         # Detect gap at market open (only runs once per day)
         self.detect_gap(df)
 
@@ -1176,6 +1192,22 @@ class BankNiftyBot:
                     self.logger.info(
                         f"MARKET-OPEN FILTER: Blocking {signal_type} | "
                         f"Bias is BEARISH (price below prev day VWAP) - only PE allowed"
+                    )
+                    return signals
+
+            # ============================================
+            # DIRECTION FILTER: Block counter-trend trades based on weekly regime
+            # In TRENDING_DOWN -> only BUY_PE allowed
+            # In TRENDING_UP -> only BUY_CE allowed
+            # ============================================
+            if MARKET_REGIME_ENABLED and ENFORCE_DIRECTION_FILTER and self.current_regime:
+                current_adx = df['ADX'].iloc[-1] if 'ADX' in df.columns and pd.notna(df['ADX'].iloc[-1]) else None
+                should_trade, reason = self.regime_analyzer.should_trade_signal(
+                    self.current_regime, signal_type, adx_value=current_adx
+                )
+                if not should_trade:
+                    self.logger.info(
+                        f"DIRECTION FILTER: Blocking {signal_type} | {reason}"
                     )
                     return signals
 
@@ -1902,6 +1934,41 @@ class BankNiftyBot:
 
         cutoff_time = now.replace(hour=cutoff_hour, minute=cutoff_minute, second=0)
         return now >= cutoff_time
+
+    def _analyze_market_regime(self):
+        """
+        Perform market regime analysis (pre-market checklist).
+
+        This runs once at market open and caches the result.
+        Used for direction filtering - blocking counter-trend trades.
+        """
+        if self.regime_analyzer is None:
+            return
+
+        try:
+            self.logger.info("-" * 60)
+            self.logger.info("Running Pre-Market Checklist...")
+            self.logger.info("-" * 60)
+
+            self.current_regime = self.regime_analyzer.analyze(BANKNIFTY_TOKEN)
+            self._regime_analyzed = True
+
+            # Log decision
+            if self.current_regime.should_trade:
+                self.logger.info(
+                    f"REGIME DECISION: TRADE ALLOWED | "
+                    f"Strategy: {self.current_regime.vwap_strategy.value} | "
+                    f"Quality: {self.current_regime.trade_quality_score}/100"
+                )
+            else:
+                self.logger.warning(
+                    f"REGIME DECISION: NO TRADE TODAY | "
+                    f"Reason: {self.current_regime.skip_reason}"
+                )
+
+        except Exception as e:
+            self.logger.error(f"Error in market regime analysis: {str(e)}")
+            self._regime_analyzed = True  # Don't retry on error
 
     def get_status(self):
         """Get current bot status."""
