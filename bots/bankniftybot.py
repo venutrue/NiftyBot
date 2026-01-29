@@ -351,7 +351,7 @@ class BankNiftyBot:
 
         This method queries real expiry dates from Kite instead of calculating
         them mathematically. It validates that expiry dates fall on the expected
-        weekday (Wednesday for BANKNIFTY weekly, or adjusted for holidays).
+        weekday (Tuesday for BANKNIFTY weekly, or adjusted for holidays).
 
         Returns:
             datetime.date object for nearest expiry, or None if not found
@@ -375,11 +375,11 @@ class BankNiftyBot:
             self.logger.error(f"No BANKNIFTY expiries found >= {today}")
             return None
 
-        # BANKNIFTY weekly expiry is on Wednesday (weekday = 2)
-        # Monthly expiry is last Wednesday of month
-        # If holiday on Wednesday, expiry moves to Tuesday (weekday = 1)
-        # Valid expiry days: Wednesday (2) or Tuesday (1, holiday adjustment)
-        valid_expiry_days = {1, 2}  # Tuesday, Wednesday
+        # BANKNIFTY weekly expiry is on Tuesday (weekday = 1)
+        # Monthly expiry is last Tuesday of month
+        # If holiday on Tuesday, expiry moves to Monday (weekday = 0)
+        # Valid expiry days: Tuesday (1) or Monday (0, holiday adjustment)
+        valid_expiry_days = {0, 1}  # Monday, Tuesday
 
         # Filter to only valid expiry days
         valid_expiries = [exp for exp in banknifty_expiries if exp.weekday() in valid_expiry_days]
@@ -392,18 +392,18 @@ class BankNiftyBot:
         # No valid expiries found - this indicates stale/incorrect instruments data
         # Fall back to calculating the expected expiry
         self.logger.warning(
-            f"No valid BANKNIFTY expiry dates found (expected Wednesday/Tuesday). "
+            f"No valid BANKNIFTY expiry dates found (expected Tuesday/Monday). "
             f"Available expiries: {sorted(banknifty_expiries)[:5]}. Calculating fallback."
         )
 
-        # Calculate next Wednesday (BANKNIFTY weekly expiry)
-        days_until_wednesday = (2 - today.weekday()) % 7
-        if days_until_wednesday == 0:
-            # Today is Wednesday
+        # Calculate next Tuesday (BANKNIFTY weekly expiry)
+        days_until_tuesday = (1 - today.weekday()) % 7
+        if days_until_tuesday == 0:
+            # Today is Tuesday
             if datetime.datetime.now().hour >= 15:
                 # After market close, use next week's expiry
-                days_until_wednesday = 7
-        expected_expiry = today + datetime.timedelta(days=days_until_wednesday)
+                days_until_tuesday = 7
+        expected_expiry = today + datetime.timedelta(days=days_until_tuesday)
 
         self.logger.info(f"Using calculated BANKNIFTY expiry: {expected_expiry} ({expected_expiry.strftime('%A')})")
         return expected_expiry
@@ -1867,7 +1867,7 @@ class BankNiftyBot:
 
     def _is_expiry_day(self):
         """
-        Check if today is BANKNIFTY's weekly expiry day (Wednesday).
+        Check if today is BANKNIFTY's weekly expiry day (Tuesday).
 
         On expiry day, option buying is extremely risky due to:
         - Rapid theta decay (time value erodes quickly)
@@ -1875,7 +1875,7 @@ class BankNiftyBot:
         - High volatility and unpredictable moves
         - Premium sellers have edge, buyers get crushed
 
-        BANKNIFTY weekly options expire on Wednesday (weekday = 2).
+        BANKNIFTY weekly options expire on Tuesday (weekday = 1).
 
         Returns:
             True if today is expiry day
@@ -1885,24 +1885,24 @@ class BankNiftyBot:
             today = datetime.date.today()
 
             if expiry_date is None:
-                # If we can't determine expiry, check if today is Wednesday (BANKNIFTY expiry)
-                self._is_expiry = today.weekday() == 2  # Wednesday = 2
+                # If we can't determine expiry, check if today is Tuesday (BANKNIFTY expiry)
+                self._is_expiry = today.weekday() == 1  # Tuesday = 1
             elif expiry_date == today:
-                # Validate: BANKNIFTY weekly expiry is on Wednesday (weekday = 2)
-                # If today is not Wednesday, this is likely stale data in instruments
-                if today.weekday() == 2:  # Wednesday
+                # Validate: BANKNIFTY weekly expiry is on Tuesday (weekday = 1)
+                # If today is not Tuesday, this is likely stale data in instruments
+                if today.weekday() == 1:  # Tuesday
                     self._is_expiry = True
                     self.logger.warning(
                         f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
                         f"Option buying is HIGH RISK due to rapid theta decay!"
                     )
                 else:
-                    # Today is not Wednesday but instruments show today's expiry
+                    # Today is not Tuesday but instruments show today's expiry
                     # This is likely stale data, not actual expiry day
                     self._is_expiry = False
                     self.logger.debug(
                         f"Found instruments with today's expiry ({today.strftime('%Y-%m-%d')}) but today is "
-                        f"{today.strftime('%A')}, not Wednesday. Treating as non-expiry day."
+                        f"{today.strftime('%A')}, not Tuesday. Treating as non-expiry day."
                     )
             else:
                 self._is_expiry = False

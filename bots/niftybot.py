@@ -360,7 +360,7 @@ class NiftyBot:
 
         This method queries real expiry dates from Kite instead of calculating
         them mathematically. It validates that expiry dates fall on the expected
-        weekday (Thursday for NIFTY weekly, or adjusted for holidays).
+        weekday (Tuesday for NIFTY weekly, or adjusted for holidays).
 
         Returns:
             datetime.date object for nearest expiry, or None if not found
@@ -384,11 +384,11 @@ class NiftyBot:
             self.logger.error(f"No NIFTY expiries found >= {today}")
             return None
 
-        # NIFTY weekly expiry is on Thursday (weekday = 3)
-        # Monthly expiry is last Thursday of month
-        # If holiday on Thursday, expiry moves to Wednesday (weekday = 2)
-        # Valid expiry days: Thursday (3) or Wednesday (2, holiday adjustment)
-        valid_expiry_days = {2, 3}  # Wednesday, Thursday
+        # NIFTY weekly expiry is on Tuesday (weekday = 1)
+        # Monthly expiry is last Tuesday of month
+        # If holiday on Tuesday, expiry moves to Monday (weekday = 0)
+        # Valid expiry days: Tuesday (1) or Monday (0, holiday adjustment)
+        valid_expiry_days = {0, 1}  # Monday, Tuesday
 
         # Filter to only valid expiry days
         valid_expiries = [exp for exp in nifty_expiries if exp.weekday() in valid_expiry_days]
@@ -401,18 +401,18 @@ class NiftyBot:
         # No valid expiries found - this indicates stale/incorrect instruments data
         # Fall back to calculating the expected expiry
         self.logger.warning(
-            f"No valid NIFTY expiry dates found (expected Thursday/Wednesday). "
+            f"No valid NIFTY expiry dates found (expected Tuesday/Monday). "
             f"Available expiries: {sorted(nifty_expiries)[:5]}. Calculating fallback."
         )
 
-        # Calculate next Thursday (NIFTY weekly expiry)
-        days_until_thursday = (3 - today.weekday()) % 7
-        if days_until_thursday == 0:
-            # Today is Thursday
+        # Calculate next Tuesday (NIFTY weekly expiry)
+        days_until_tuesday = (1 - today.weekday()) % 7
+        if days_until_tuesday == 0:
+            # Today is Tuesday
             if datetime.datetime.now().hour >= 15:
                 # After market close, use next week's expiry
-                days_until_thursday = 7
-        expected_expiry = today + datetime.timedelta(days=days_until_thursday)
+                days_until_tuesday = 7
+        expected_expiry = today + datetime.timedelta(days=days_until_tuesday)
 
         self.logger.info(f"Using calculated NIFTY expiry: {expected_expiry} ({expected_expiry.strftime('%A')})")
         return expected_expiry
@@ -2160,7 +2160,7 @@ class NiftyBot:
         On expiry day, option buying is extremely risky due to rapid theta decay.
         Options can lose 80-90% of value in minutes as time premium evaporates.
 
-        NIFTY weekly options expire on Thursday (weekday = 3).
+        NIFTY weekly options expire on Tuesday (weekday = 1).
 
         Returns:
             bool: True if today is expiry day
@@ -2171,21 +2171,21 @@ class NiftyBot:
                 today = datetime.date.today()
                 # Check if the nearest expiry matches today
                 if expiry_date == today:
-                    # Validate: NIFTY weekly expiry is on Thursday (weekday = 3)
-                    # If today is not Thursday, this is likely stale data in instruments
-                    if today.weekday() == 3:  # Thursday
+                    # Validate: NIFTY weekly expiry is on Tuesday (weekday = 1)
+                    # If today is not Tuesday, this is likely stale data in instruments
+                    if today.weekday() == 1:  # Tuesday
                         self._is_expiry = True
                         self.logger.warning(
                             f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
                             f"Option buying is HIGH RISK due to rapid theta decay!"
                         )
                     else:
-                        # Today is not Thursday but instruments show today's expiry
+                        # Today is not Tuesday but instruments show today's expiry
                         # This is likely stale data, not actual expiry day
                         self._is_expiry = False
                         self.logger.debug(
                             f"Found instruments with today's expiry ({today.strftime('%Y-%m-%d')}) but today is "
-                            f"{today.strftime('%A')}, not Thursday. Treating as non-expiry day."
+                            f"{today.strftime('%A')}, not Tuesday. Treating as non-expiry day."
                         )
                 else:
                     self._is_expiry = False

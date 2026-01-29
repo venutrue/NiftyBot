@@ -597,7 +597,7 @@ class MarketRegimeAnalyzer:
         Event days include:
         - RBI MPC meetings
         - Budget day
-        - Monthly F&O expiry (last Thursday)
+        - Monthly F&O expiry (last Tuesday)
         - Major elections
         """
         # Check known events
@@ -609,12 +609,12 @@ class MarketRegimeAnalyzer:
                 else:
                     return True, "RBI MPC Meeting"
 
-        # Check for monthly expiry (last Thursday of month)
+        # Check for monthly expiry (last Tuesday of month)
         if self._is_monthly_expiry(today):
             return True, "Monthly F&O Expiry"
 
-        # Check for weekly expiry (every Thursday) - less severe but noteworthy
-        if today.weekday() == 3:  # Thursday
+        # Check for weekly expiry (every Tuesday) - less severe but noteworthy
+        if today.weekday() == 1:  # Tuesday
             # Weekly expiry is not a full skip, but we note it
             # We'll let the matrix decide the impact
             pass
@@ -622,11 +622,11 @@ class MarketRegimeAnalyzer:
         return False, ""
 
     def _is_monthly_expiry(self, today: datetime.date) -> bool:
-        """Check if today is the last Thursday of the month (monthly expiry)."""
-        if today.weekday() != 3:  # Not Thursday
+        """Check if today is the last Tuesday of the month (monthly expiry)."""
+        if today.weekday() != 1:  # Not Tuesday
             return False
 
-        # Check if there's another Thursday this month
+        # Check if there's another Tuesday this month
         next_week = today + datetime.timedelta(days=7)
         return next_week.month != today.month
 
