@@ -360,7 +360,7 @@ class NiftyBot:
 
         This method queries real expiry dates from Kite instead of calculating
         them mathematically. It validates that expiry dates fall on the expected
-        weekday (Tuesday for NIFTY weekly, or adjusted for holidays).
+        weekday (Tuesday for NIFTY weekly per NSE rules, or Monday for holidays).
 
         Returns:
             datetime.date object for nearest expiry, or None if not found
@@ -384,8 +384,7 @@ class NiftyBot:
             self.logger.error(f"No NIFTY expiries found >= {today}")
             return None
 
-        # NIFTY weekly expiry is on Tuesday (weekday = 1)
-        # Monthly expiry is last Tuesday of month
+        # NIFTY weekly expiry is on Tuesday (weekday = 1) per NSE rules
         # If holiday on Tuesday, expiry moves to Monday (weekday = 0)
         # Valid expiry days: Tuesday (1) or Monday (0, holiday adjustment)
         valid_expiry_days = {0, 1}  # Monday, Tuesday

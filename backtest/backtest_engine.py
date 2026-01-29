@@ -220,7 +220,7 @@ class BacktestEngine:
         Get the nearest weekly expiry date from actual Kite instruments.
 
         This method validates that expiry dates fall on the expected weekday
-        (Thursday for NIFTY weekly, or Wednesday for holiday adjustments).
+        (Tuesday for NIFTY weekly per NSE rules, or Monday for holiday adjustments).
 
         Args:
             reference_date: Date to find expiry for (datetime.date or datetime.datetime)
@@ -249,10 +249,10 @@ class BacktestEngine:
             self.logger.error(f"No NIFTY expiries found >= {reference_date}")
             return None
 
-        # NIFTY weekly expiry is on Thursday (weekday = 3)
-        # If holiday on Thursday, expiry moves to Wednesday (weekday = 2)
-        # Valid expiry days: Thursday (3) or Wednesday (2, holiday adjustment)
-        valid_expiry_days = {2, 3}  # Wednesday, Thursday
+        # NIFTY weekly expiry is on Tuesday (weekday = 1) per NSE rules
+        # If holiday on Tuesday, expiry moves to Monday (weekday = 0)
+        # Valid expiry days: Tuesday (1) or Monday (0, holiday adjustment)
+        valid_expiry_days = {0, 1}  # Monday, Tuesday
 
         # Filter to only valid expiry days
         valid_expiries = [exp for exp in nifty_expiries if exp.weekday() in valid_expiry_days]
@@ -264,15 +264,15 @@ class BacktestEngine:
 
         # No valid expiries found - fall back to calculating expected expiry
         self.logger.warning(
-            f"No valid NIFTY expiry dates found (expected Thursday/Wednesday). "
+            f"No valid NIFTY expiry dates found (expected Tuesday/Monday). "
             f"Available expiries: {sorted(nifty_expiries)[:5]}. Calculating fallback."
         )
 
-        # Calculate next Thursday from reference date
-        days_until_thursday = (3 - reference_date.weekday()) % 7
-        if days_until_thursday == 0:
-            days_until_thursday = 7  # Use next week if reference is Thursday
-        expected_expiry = reference_date + datetime.timedelta(days=days_until_thursday)
+        # Calculate next Tuesday from reference date
+        days_until_tuesday = (1 - reference_date.weekday()) % 7
+        if days_until_tuesday == 0:
+            days_until_tuesday = 7  # Use next week if reference is Tuesday
+        expected_expiry = reference_date + datetime.timedelta(days=days_until_tuesday)
 
         self.logger.info(f"Using calculated NIFTY expiry: {expected_expiry} ({expected_expiry.strftime('%A')})")
         return expected_expiry
