@@ -2159,7 +2159,7 @@ class NiftyBot:
         On expiry day, option buying is extremely risky due to rapid theta decay.
         Options can lose 80-90% of value in minutes as time premium evaporates.
 
-        NIFTY weekly options expire on Thursday (weekday = 3).
+        NIFTY weekly options expire on Tuesday (weekday = 1).
 
         Returns:
             bool: True if today is expiry day
@@ -2170,21 +2170,21 @@ class NiftyBot:
                 today = datetime.date.today()
                 # Check if the nearest expiry matches today
                 if expiry_date == today:
-                    # Validate: NIFTY weekly expiry is on Thursday (weekday = 3)
-                    # If today is not Thursday, this is likely stale data in instruments
-                    if today.weekday() == 3:  # Thursday
+                    # Validate: NIFTY weekly expiry is on Tuesday (weekday = 1)
+                    # If today is not Tuesday, this is likely stale data in instruments
+                    if today.weekday() == 1:  # Tuesday
                         self._is_expiry = True
                         self.logger.warning(
                             f"⚠️ TODAY IS EXPIRY DAY ({expiry_date.strftime('%Y-%m-%d')}) - "
                             f"Option buying is HIGH RISK due to rapid theta decay!"
                         )
                     else:
-                        # Today is not Thursday but instruments show today's expiry
+                        # Today is not Tuesday but instruments show today's expiry
                         # This is likely stale data, not actual expiry day
                         self._is_expiry = False
                         self.logger.debug(
                             f"Found instruments with today's expiry ({today.strftime('%Y-%m-%d')}) but today is "
-                            f"{today.strftime('%A')}, not Thursday. Treating as non-expiry day."
+                            f"{today.strftime('%A')}, not Tuesday. Treating as non-expiry day."
                         )
                 else:
                     self._is_expiry = False
