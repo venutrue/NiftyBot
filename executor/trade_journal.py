@@ -248,10 +248,10 @@ class TradeJournal:
         self.daily_summary = summary.to_dict('records')
     
     def get_stats(self) -> Dict:
-        """Get trading statistics."""
+        """Get trading statistics for ALL trades in journal."""
         df = pd.DataFrame(self.trades)
         closed = df[df['Status'] == 'CLOSED']
-        
+
         if closed.empty:
             return {
                 'total_trades': 0,
@@ -261,9 +261,9 @@ class TradeJournal:
                 'best_trade': 0,
                 'worst_trade': 0
             }
-        
+
         wins = closed[closed['P&L'] > 0]
-        
+
         return {
             'total_trades': len(closed),
             'open_trades': len(df[df['Status'] == 'OPEN']),
@@ -273,6 +273,45 @@ class TradeJournal:
             'best_trade': closed['P&L'].max(),
             'worst_trade': closed['P&L'].min(),
             'avg_duration': closed['Duration (min)'].mean()
+        }
+
+    def get_today_stats(self) -> Dict:
+        """Get trading statistics for TODAY's trades only."""
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        df = pd.DataFrame(self.trades)
+
+        if df.empty:
+            return {
+                'total_trades': 0,
+                'winners': 0,
+                'losers': 0,
+                'win_rate': 0,
+                'total_pnl': 0
+            }
+
+        # Filter to today's trades (by entry date)
+        today_trades = df[df['Entry Date'] == today]
+        closed = today_trades[today_trades['Status'] == 'CLOSED']
+
+        if closed.empty:
+            return {
+                'total_trades': 0,
+                'winners': 0,
+                'losers': 0,
+                'win_rate': 0,
+                'total_pnl': 0
+            }
+
+        wins = closed[closed['P&L'] > 0]
+        losses = closed[closed['P&L'] <= 0]
+
+        return {
+            'total_trades': len(closed),
+            'winners': len(wins),
+            'losers': len(losses),
+            'win_rate': len(wins) / len(closed) * 100 if len(closed) > 0 else 0,
+            'total_pnl': closed['P&L'].sum(),
+            'open_trades': len(today_trades[today_trades['Status'] == 'OPEN'])
         }
     
     def print_summary(self):
