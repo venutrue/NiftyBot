@@ -372,14 +372,12 @@ def run_trading_loop(executor, bots, dry_run=False, interval=60, position_interv
         # Use PAPER journal if paper trading, else LIVE
         journal_mode = 'PAPER' if hasattr(executor, 'is_paper') and executor.is_paper else 'LIVE'
         journal = get_journal(journal_mode)
-        stats = journal.get_stats()
+        # Use get_today_stats() to only count TODAY's trades, not historical
+        today_stats = journal.get_today_stats()
 
-        # Count today's winners and losers from journal
-        closed_trades = stats.get('total_trades', 0)
-        if closed_trades > 0:
-            win_rate = stats.get('win_rate', 0)
-            total_winners = int(closed_trades * win_rate / 100)
-            total_losers = closed_trades - total_winners
+        # Get today's winners and losers directly from filtered stats
+        total_winners = today_stats.get('winners', 0)
+        total_losers = today_stats.get('losers', 0)
     except Exception as e:
         logger.debug(f"Could not get journal stats: {e}")
 
