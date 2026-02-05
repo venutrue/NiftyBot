@@ -651,14 +651,9 @@ class MarketRegimeAnalyzer:
         Returns:
             (strategy, should_trade, skip_reason, quality_score)
         """
-        # Event day overrides everything
-        if is_event_day:
-            return (
-                VWAPStrategy.NO_TRADE,
-                False,
-                "Event day - volatility unpredictable, avoid VWAP trades",
-                0
-            )
+        # Event day is now informational only - no longer blocks trades
+        # Strong ADX/VWAP/Supertrend confluence provides sufficient filtering
+        # The 2-candle SL confirmation protects against volatile reversals
 
         # Handle unknown conditions
         if weekly == WeeklyTrend.UNKNOWN or daily == DailyPattern.UNKNOWN:
