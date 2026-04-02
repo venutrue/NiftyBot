@@ -1,0 +1,101 @@
+{
+  "timestamp": "2026-02-11T13:28:35.060307",
+  "initial_capital": 200000,
+  "current_capital": 151276.78125,
+  "peak_capital": 200000,
+  "total_pnl": -11962.831249999981,
+  "max_drawdown": 24.361609375,
+  "order_counter": 6,
+  "total_trades": 4,
+  "winning_trades": 0,
+  "losing_trades": 4,
+  "open_trades": [
+    {
+      "order_id": "PAPER_000003",
+      "timestamp": "2026-02-11 11:24:44.059601",
+      "symbol": "BANKNIFTY26FEB60700CE",
+      "action": "BUY",
+      "quantity": 75,
+      "entry_price": 490.13849999999996,
+      "exit_price": null,
+      "exit_time": null,
+      "status": "OPEN",
+      "pnl": 0.0,
+      "pnl_percent": 0.0,
+      "reason": "BUY_CE - VWAP+ST+ADX confluence"
+    }
+  ],
+  "closed_trades": [
+    {
+      "order_id": "PAPER_000001",
+      "timestamp": "2026-02-11 10:29:02.542584",
+      "symbol": "NIFTY2621725950CE",
+      "action": "BUY",
+      "quantity": 250,
+      "entry_price": 150.09675,
+      "exit_price": 135.86725,
+      "exit_time": "2026-02-11 11:08:49.236112",
+      "status": "CLOSED",
+      "pnl": -3557.374999999993,
+      "pnl_percent": -9.480218592341256,
+      "reason": "Stop loss hit (Premium: 136.75 <= SL: 143.55)"
+    },
+    {
+      "order_id": "PAPER_000002",
+      "timestamp": "2026-02-11 10:29:13.256353",
+      "symbol": "BANKNIFTY26FEB60600CE",
+      "action": "BUY",
+      "quantity": 75,
+      "entry_price": 518.3789999999999,
+      "exit_price": 514.9125,
+      "exit_time": "2026-02-11 11:08:55.908865",
+      "status": "CLOSED",
+      "pnl": -259.9874999999912,
+      "pnl_percent": -0.6687192189498192,
+      "reason": "Trailing SL CONFIRMED (2 candles) - (Close: 517.25 <= SL: 518.02)"
+    },
+    {
+      "order_id": "PAPER_000004",
+      "timestamp": "2026-02-11 11:39:09.672863",
+      "symbol": "NIFTY2621725950CE",
+      "action": "BUY",
+      "quantity": 250,
+      "entry_price": 149.09175,
+      "exit_price": 132.98175,
+      "exit_time": "2026-02-11 11:59:55.482636",
+      "status": "CLOSED",
+      "pnl": -4027.4999999999964,
+      "pnl_percent": -10.80542685963508,
+      "reason": "Initial SL hit - fallback (Premium: 133.65 <= SL: 133.78)"
+    },
+    {
+      "order_id": "PAPER_000005",
+      "timestamp": "2026-02-11 12:37:49.454714",
+      "symbol": "NIFTY2621725900PE",
+      "action": "BUY",
+      "quantity": 375,
+      "entry_price": 98.64075,
+      "exit_price": 87.6595,
+      "exit_time": "2026-02-11 13:28:35.056099",
+      "status": "CLOSED",
+      "pnl": -4117.968750000001,
+      "pnl_percent": -11.13256945025256,
+      "reason": "Hidden SL CONFIRMED (2 candles) - (Close: \u20b988.00 <= SL: \u20b988.34)"
+    }
+  ],
+  "performance": {
+    "initial_capital": 200000,
+    "current_capital": 151276.78125,
+    "total_pnl": -11962.831249999981,
+    "total_return_percent": -24.361609375,
+    "total_trades": 4,
+    "winning_trades": 0,
+    "losing_trades": 4,
+    "win_rate": 0.0,
+    "avg_win": 0.0,
+    "avg_loss": -2990.7078124999953,
+    "profit_factor": 0.0,
+    "max_drawdown": 24.361609375,
+    "open_positions": 1
+  }
+}

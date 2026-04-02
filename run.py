@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# NiftyBot is an automated trading system for NIFTY, BANKNIFTY, stocks, and Gold
+# that can run in live, paper, dry-run, and status-check modes from one entrypoint.
 ##############################################
 # RUN.PY - MAIN ENTRY POINT
 # Start all trading bots with a single command
@@ -399,9 +401,14 @@ def main():
     global running
 
     args = parse_arguments()
+    logger.info(
+        "Startup arguments | bot=%s | paper=%s | dry_run=%s | status=%s",
+        args.bot, args.paper, args.dry_run, args.status
+    )
 
     # Validate credentials first
     if not validate_credentials():
+        logger.error("Credential validation failed during startup")
         sys.exit(1)
 
     # Initialize executor (paper or live)
@@ -428,6 +435,11 @@ def main():
     if not bot_classes:
         logger.error("No valid bots specified. Exiting.")
         sys.exit(1)
+
+    logger.info(
+        "Selected bots: %s",
+        ", ".join(bot_class.__name__ for bot_class in bot_classes)
+    )
 
     # Initialize bots
     bots = [BotClass(executor) for BotClass in bot_classes]
